@@ -1,0 +1,105 @@
+# DelegNet — full paper configuration (real on-chain data only).
+# Endpoints are routed per JSON-RPC method; put a paid archive endpoint first when you have one,
+# e.g. export ETH_RPC=https://eth-mainnet.g.alchemy.com/v2/<key>  and reference it as ${ETH_RPC}.
+
+data_root: data
+run_root: runs
+
+collect:
+  concurrency: 12
+  scan_chunk: 2000           # blocks per scan file
+  activity_block_chunk: 20000
+  activity_addr_chunk: 100
+  hop2_limit: 5000           # candidate sinks / sponsor funders to expand
+
+chains:
+  ethereum:
+    chain_id: 1
+    token_logs: false      # set true once ETH_RPC (paid/archive, wide eth_getLogs ranges) is exported
+    start_time: "2025-05-07T10:05:00Z"   # Pectra activation (EIP-7702 live)
+    end_time:   "2025-07-07T00:00:00Z"
+    endpoints:
+      default: ["${ETH_RPC}", "https://ethereum-rpc.publicnode.com"]
+      eth_getBlockByNumber:batch: ["${ETH_RPC}", "https://ethereum-rpc.publicnode.com", "https://1rpc.io/eth",
+                                   "https://eth-mainnet.public.blastapi.io", "https://rpc.mevblocker.io"]
+      eth_getLogs: ["${ETH_RPC}", "https://1rpc.io/eth", "https://eth-mainnet.public.blastapi.io"]
+      trace_filter: ["${ETH_RPC}", "https://eth.drpc.org"]
+      eth_getTransactionByHash: ["${ETH_RPC}", "https://ethereum-rpc.publicnode.com", "https://eth.drpc.org"]
+  base:
+    chain_id: 8453
+    start_time: "2025-05-09T20:00:00Z"   # Isthmus
+    end_time:   "2025-07-09T00:00:00Z"
+    endpoints:
+      default: ["${BASE_RPC}", "https://base-rpc.publicnode.com"]
+      eth_getLogs: ["${BASE_RPC}", "https://1rpc.io/base"]
+      trace_filter: ["${BASE_RPC}", "https://base.drpc.org"]
+  bsc:
+    chain_id: 56
+    start_time: "2025-03-20T00:00:00Z"   # Pascal (EIP-7702 on BSC); verify block, earlier is harmless
+    end_time:   "2025-05-20T00:00:00Z"
+    endpoints:
+      default: ["${BSC_RPC}", "https://bsc-rpc.publicnode.com"]
+      eth_getLogs: ["${BSC_RPC}", "https://1rpc.io/bnb"]
+      trace_filter: ["${BSC_RPC}", "https://bsc.drpc.org"]
+  arbitrum:
+    chain_id: 42161
+    start_time: "2025-06-17T00:00:00Z"   # ArbOS 40 (verify activation block)
+    end_time:   "2025-08-17T00:00:00Z"
+    endpoints:
+      default: ["${ARB_RPC}", "https://arbitrum-one-rpc.publicnode.com"]
+      eth_getLogs: ["${ARB_RPC}", "https://1rpc.io/arb"]
+      trace_filter: ["${ARB_RPC}", "https://arbitrum.drpc.org"]
+
+labels:
+  # Optional curated lists (address,source,name). They override behavioural labels.
+  malicious_lists: ["labels/malicious_delegates.csv"]
+  benign_lists: ["labels/benign_delegates.csv"]
+  # public scammer-address lists, used only as an independent check of our labels
+  scam_address_lists: ["labels/scam_addresses.csv"]
+  min_drained_authorities: 3     # contract-level evidence for "malicious"
+  min_drained_ratio: 0.02        # sweepers only fire when funds arrive; most victim wallets are empty
+  max_malicious_self_active: 0.2 # owners of compromised/phished accounts stop transacting themselves
+  min_shared_sink_ratio: 0.6
+  min_sink_event_share: 0.8      # third-party outflows must concentrate in shared EOA sinks
+  min_benign_authorities: 5
+  max_benign_drained_ratio: 0.05
+  min_benign_self_active: 0.3
+  drain_window_s: 86400          # outflows within 24h of delegation count as drain evidence
+
+graph:
+  k1: 24                 # most recent events per centre node
+  k2: 8                  # per 1-hop neighbour
+  max_nodes: 256
+  max_siblings: 256      # earlier delegators of the same contract considered by the motif counter
+  motif_delta_s: 3600
+
+experiment:
+  source_chain: ethereum
+  target_chains: [base, bsc, arbitrum]
+  checkpoints_s: [0, 12, 60, 300, 1800, 7200]
+  train_checkpoints_s: [0, 12, 60, 300]
+  split: [0.6, 0.2, 0.2]          # temporal train/val/test
+  heldout_family_frac: 0.25       # family-disjoint protocol
+  target_fpr: 0.01
+  few_shot_k: [10, 50]
+  seeds: [0, 1, 2, 3, 4]
+  mutation_strengths: [0, 0.5, 1, 2, 4]
+
+model:
+  dim: 128
+  heads: 4
+  layers: 2
+  dropout: 0.1
+  code_len: 512
+  code_layers: 2
+  prototypes_per_class: 10
+  lr: 0.001
+  weight_decay: 0.0001
+  epochs: 40
+  patience: 8
+  batch_size: 64
+  lambda_cluster: 0.05
+  lambda_sep: 0.01
+  lambda_div: 0.01
+  pretrain_epochs: 30
+  device: cpu

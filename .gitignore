@@ -1,0 +1,16 @@
+# environments
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.DS_Store
+
+# collected chain data, built graphs, sample caches and experiment outputs are large and
+# reproducible from the pipeline; they are shared separately (dataset release), not in git
+data/
+runs/
+logs/
+
+# third-party label sources are fetched by scripts/fetch_labels.sh, not redistributed here
+labels/*
+!labels/README.md
