@@ -73,9 +73,14 @@ class HeteroTemporalAttention(nn.Module):
         self.h, self.dh, self.flags = heads, d // heads, flags
         din = d + edim + (tdim if flags.use_time else 0)
         n_rel = n_rel if flags.use_rel else 1
+        self.n_rel, self.d = n_rel, d
         self.q = nn.Linear(d, d)
-        self.k = nn.ModuleList(nn.Linear(din, d) for _ in range(n_rel))
-        self.v = nn.ModuleList(nn.Linear(din, d) for _ in range(n_rel))
+        # shared key/value projection, modulated per relation (FiLM): cheap on GPU, still relation-aware
+        self.kv = nn.Linear(din, 2 * d)
+        self.rel_scale = nn.Embedding(n_rel, 2 * d)
+        self.rel_shift = nn.Embedding(n_rel, 2 * d)
+        nn.init.zeros_(self.rel_scale.weight)
+        nn.init.zeros_(self.rel_shift.weight)
         self.o = nn.Linear(d, d)
         self.n1, self.n2 = nn.LayerNorm(d), nn.LayerNorm(d)
         self.ff = nn.Sequential(nn.Linear(d, 2 * d), nn.GELU(), nn.Dropout(dropout), nn.Linear(2 * d, d))
@@ -86,13 +91,8 @@ class HeteroTemporalAttention(nn.Module):
         parts = [h[src], efeat] + ([tfeat] if self.flags.use_time else [])
         inp = torch.cat(parts, 1)
         rel = rel if self.flags.use_rel else torch.zeros_like(rel)
-        k = torch.empty(E, h.shape[1], device=h.device)
-        v = torch.empty_like(k)
-        for r in range(len(self.k)):
-            m = rel == r
-            if m.any():
-                k[m], v[m] = self.k[r](inp[m]), self.v[r](inp[m])
-        k, v = k.view(E, self.h, self.dh), v.view(E, self.h, self.dh)
+        kv = self.kv(inp) * (1 + self.rel_scale(rel)) + self.rel_shift(rel)
+        k, v = kv[:, :self.d].reshape(E, self.h, self.dh), kv[:, self.d:].reshape(E, self.h, self.dh)
         if self.flags.attention:
             q = self.q(h).view(n, self.h, self.dh)[dst]
             score = (q * k).sum(-1) / math.sqrt(self.dh)

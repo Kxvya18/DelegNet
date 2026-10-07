@@ -3,7 +3,7 @@
 Early detection of malicious EIP-7702 delegations with heterogeneous temporal graph learning,
 bytecode representation learning and a pattern-recognition module (temporal attack motifs,
 prototype-based explanations, open-set detection of new attack families). Built on real
-on-chain data from Ethereum, Base, BSC and Arbitrum.
+on-chain data from Ethereum (source) and Base / BSC (cross-chain targets).
 
 ## Layout
 
@@ -33,11 +33,21 @@ only speeds things up / enables token transfers: `export ETH_RPC=...` and set `t
 
 ## Pipeline
 
+One-shot scripts (resumable):
+
+```bash
+scripts/run_pipeline.sh ethereum    # collect -> label -> build graph (also: bsc, base)
+scripts/run_experiments.sh          # pretrain, zero-day, temporal, family, cross-chain, analyses, report
+```
+
+Or step by step:
+
 ```bash
 python run.py collect --chain ethereum      # scan, code, activity, hop2 (resumable)
 python run.py label   --chain ethereum
 python run.py build   --chain ethereum
 python run.py pretrain
+python run.py experiment --protocol zeroday     # unseen contract families (leave-family-out CV)
 python run.py experiment --protocol temporal
 python run.py experiment --protocol family
 python run.py experiment --protocol crosschain

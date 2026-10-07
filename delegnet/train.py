@@ -265,5 +265,5 @@ def pretrain_code_encoder(cfg):
             opt.zero_grad(); loss.backward(); opt.step()
             tot += loss.item()
         log.info("pretrain epoch %d loss %.4f", ep, tot)
-    Path(cfg["run_root"]).mkdir(exist_ok=True)
+    Path(cfg["run_root"]).mkdir(parents=True, exist_ok=True)
     torch.save(enc.state_dict(), Path(cfg["run_root"]) / "code_encoder.pt")

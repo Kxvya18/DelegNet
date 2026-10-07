@@ -2,15 +2,17 @@
 # Endpoints are routed per JSON-RPC method; put a paid archive endpoint first when you have one,
 # e.g. export ETH_RPC=https://eth-mainnet.g.alchemy.com/v2/<key>  and reference it as ${ETH_RPC}.
 
-data_root: data
+data_root: data/full       # sampled working set; the raw full scan lives in collect.scan_root
 run_root: runs
 
 collect:
   concurrency: 12
   scan_chunk: 2000           # blocks per scan file
-  activity_block_chunk: 20000
-  activity_addr_chunk: 100
-  hop2_limit: 5000           # candidate sinks / sponsor funders to expand
+  activity_block_chunk: 5000
+  activity_addr_chunk: 25
+  hop2_limit: 2000           # candidate sinks / sponsor funders to expand
+  scan_root: data            # full type-4 scan (all authorizations)
+  per_contract_cap: 1000     # stratified sample for activity collection
 
 chains:
   ethereum:
@@ -25,30 +27,31 @@ chains:
       eth_getLogs: ["${ETH_RPC}", "https://1rpc.io/eth", "https://eth-mainnet.public.blastapi.io"]
       trace_filter: ["${ETH_RPC}", "https://eth.drpc.org"]
       eth_getTransactionByHash: ["${ETH_RPC}", "https://ethereum-rpc.publicnode.com", "https://eth.drpc.org"]
+      eth_getTransactionByHash:batch: ["${ETH_RPC}", "https://ethereum-rpc.publicnode.com", "https://1rpc.io/eth",
+                                       "https://eth-mainnet.public.blastapi.io", "https://rpc.mevblocker.io"]
   base:
     chain_id: 8453
-    start_time: "2025-05-09T20:00:00Z"   # Isthmus
-    end_time:   "2025-07-09T00:00:00Z"
+    token_logs: false
+    start_time: "2025-05-09T20:00:00Z"   # Isthmus (EIP-7702 on Base)
+    end_time:   "2025-05-16T20:00:00Z"   # 7 days: cross-chain test set
     endpoints:
-      default: ["${BASE_RPC}", "https://base-rpc.publicnode.com"]
-      eth_getLogs: ["${BASE_RPC}", "https://1rpc.io/base"]
+      default: ["${BASE_RPC}", "https://mainnet.base.org", "https://base-mainnet.public.blastapi.io"]
+      eth_getBlockByNumber:batch: ["${BASE_RPC}", "https://mainnet.base.org", "https://base-mainnet.public.blastapi.io"]
+      eth_getTransactionByHash:batch: ["${BASE_RPC}", "https://mainnet.base.org", "https://base-mainnet.public.blastapi.io"]
       trace_filter: ["${BASE_RPC}", "https://base.drpc.org"]
   bsc:
     chain_id: 56
-    start_time: "2025-03-20T00:00:00Z"   # Pascal (EIP-7702 on BSC); verify block, earlier is harmless
-    end_time:   "2025-05-20T00:00:00Z"
+    token_logs: false
+    start_time: "2025-03-20T00:00:00Z"   # Pascal (EIP-7702 on BSC)
+    end_time:   "2025-03-27T00:00:00Z"   # 7 days: cross-chain test set
     endpoints:
-      default: ["${BSC_RPC}", "https://bsc-rpc.publicnode.com"]
-      eth_getLogs: ["${BSC_RPC}", "https://1rpc.io/bnb"]
+      default: ["${BSC_RPC}", "https://bsc-rpc.publicnode.com", "https://bsc-dataseed.bnbchain.org"]
+      eth_getBlockByNumber:batch: ["${BSC_RPC}", "https://bsc-rpc.publicnode.com", "https://bsc-dataseed.bnbchain.org",
+                                   "https://bsc-mainnet.public.blastapi.io"]
+      eth_getTransactionByHash:batch: ["${BSC_RPC}", "https://bsc-rpc.publicnode.com", "https://bsc-dataseed.bnbchain.org",
+                                       "https://bsc-mainnet.public.blastapi.io"]
       trace_filter: ["${BSC_RPC}", "https://bsc.drpc.org"]
-  arbitrum:
-    chain_id: 42161
-    start_time: "2025-06-17T00:00:00Z"   # ArbOS 40 (verify activation block)
-    end_time:   "2025-08-17T00:00:00Z"
-    endpoints:
-      default: ["${ARB_RPC}", "https://arbitrum-one-rpc.publicnode.com"]
-      eth_getLogs: ["${ARB_RPC}", "https://1rpc.io/arb"]
-      trace_filter: ["${ARB_RPC}", "https://arbitrum.drpc.org"]
+  # arbitrum: dropped — trace_filter is not available on any free plan (needed for internal sweeps)
 
 labels:
   # Optional curated lists (address,source,name). They override behavioural labels.
@@ -75,14 +78,15 @@ graph:
 
 experiment:
   source_chain: ethereum
-  target_chains: [base, bsc, arbitrum]
+  target_chains: [base, bsc]
   checkpoints_s: [0, 12, 60, 300, 1800, 7200]
-  train_checkpoints_s: [0, 12, 60, 300]
+  train_checkpoints_s: [0, 60, 300]
   split: [0.6, 0.2, 0.2]          # temporal train/val/test
   heldout_family_frac: 0.25       # family-disjoint protocol
   target_fpr: 0.01
   few_shot_k: [10, 50]
-  seeds: [0, 1, 2, 3, 4]
+  seeds: [0, 1, 2]                # 3 seeds keeps the full run within a day on one Mac GPU
+  zeroday_folds: 5
   mutation_strengths: [0, 0.5, 1, 2, 4]
 
 model:
@@ -95,11 +99,11 @@ model:
   prototypes_per_class: 10
   lr: 0.001
   weight_decay: 0.0001
-  epochs: 40
-  patience: 8
+  epochs: 30
+  patience: 6
   batch_size: 64
   lambda_cluster: 0.05
   lambda_sep: 0.01
   lambda_div: 0.01
   pretrain_epochs: 30
-  device: cpu
+  device: mps            # Apple GPU; use cpu or cuda elsewhere
