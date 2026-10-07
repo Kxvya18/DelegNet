@@ -1,5 +1,7 @@
 # DelegNet
 
+> New here? Read **[GUIDE.md](GUIDE.md)** first: a plain-language intro, setup steps and how we work.
+
 Early detection of malicious EIP-7702 delegations with heterogeneous temporal graph learning,
 bytecode representation learning and a pattern-recognition module (temporal attack motifs,
 prototype-based explanations, open-set detection of new attack families). Built on real
