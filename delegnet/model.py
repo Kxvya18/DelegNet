@@ -28,22 +28,25 @@ class Flags:
     code: str = "transformer"     # transformer | idioms | none
     use_motifs: bool = True
     use_proto: bool = True
+    memory: bool = True           # code-pattern retrieval memory (similarity to known scam / benign code)
 
 
 VARIANTS = {
     "DelegNet":            Flags(),
     "DelegNet-noProto":    Flags(use_proto=False),
     "DelegNet-noMotif":    Flags(use_motifs=False),
-    "DelegNet-noCode":     Flags(code="none"),
+    "DelegNet-noCode":     Flags(code="none", memory=False),
     "DelegNet-idiomsOnly": Flags(code="idioms"),
     "DelegNet-noTime":     Flags(use_time=False),
     "DelegNet-noRel":      Flags(use_rel=False),
-    "TGAT":                Flags(code="none", use_motifs=False, use_proto=False, use_rel=False),
-    "StaticGAT":           Flags(code="none", use_motifs=False, use_proto=False, use_rel=False, use_time=False),
+    "TGAT":                Flags(code="none", use_motifs=False, use_proto=False, use_rel=False, memory=False),
+    "StaticGAT":           Flags(code="none", use_motifs=False, use_proto=False, use_rel=False, use_time=False,
+                                 memory=False),
     "GraphSAGE":           Flags(code="none", use_motifs=False, use_proto=False, use_rel=False, use_time=False,
-                                 attention=False),
+                                 attention=False, memory=False),
     "DelegNet-noPretrain": Flags(),
-    "MLP+Code":            Flags(use_graph=False, use_motifs=False, use_proto=False),
+    "DelegNet-noMemory":   Flags(memory=False),
+    "MLP+Code":            Flags(use_graph=False, use_motifs=False, use_proto=False, memory=False),
 }
 
 
@@ -146,9 +149,12 @@ class DelegNet(nn.Module):
             self.motif = nn.Sequential(nn.Linear(len(MOTIF_NAMES), d), nn.GELU(), nn.Linear(d, d))
         head_in = 3 * d + len(AUTH_FEATS) + (d if flags.code != "none" else 0) + (d if flags.use_motifs else 0)
         self.readout = nn.Sequential(nn.Linear(head_in, d), nn.GELU(), nn.Dropout(m["dropout"]), nn.Linear(d, d))
-        # prediction always comes from a standard head; the prototype layer runs alongside it
-        # as the explanation / novelty module (it is trained jointly but does not gate accuracy)
-        self.out = nn.Sequential(nn.GELU(), nn.Linear(d, 1))
+        # Pattern Recognition Module drives the decision: the head sees the embedding together with
+        # (a) its similarity to every learned prototype pattern and (b) the code-retrieval memory
+        # (similarity of the contract's canonical code to known scam / benign patterns).
+        n_pat = (2 * m["prototypes_per_class"] if flags.use_proto else 0) + (2 if flags.memory else 0)
+        self.out = nn.Sequential(nn.GELU(), nn.Linear(d + n_pat, d), nn.GELU(), nn.Linear(d, 1)) if n_pat \
+            else nn.Sequential(nn.GELU(), nn.Linear(d, 1))
         if flags.use_proto:
             self.proto = PrototypeLayer(d, m["prototypes_per_class"])
 
@@ -188,8 +194,13 @@ class DelegNet(nn.Module):
         if self.flags.use_motifs:
             parts.append(self.motif(b["motifs"]))
         z = self.readout(torch.cat(parts, 1))
-        out = dict(logit=self.out(z).squeeze(1), z=z)
+        head = [z]
+        out = dict(z=z)
         if self.flags.use_proto:
             plogit, sim, d2 = self.proto(z)
             out.update(proto_logit=plogit, sim=sim, d2=d2)
+            head.append(sim)
+        if self.flags.memory:
+            head.append(b["pattern_sims"])
+        out["logit"] = self.out(torch.cat(head, 1)).squeeze(1)
         return out
