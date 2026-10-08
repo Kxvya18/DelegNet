@@ -24,6 +24,7 @@ watched() {   # watched <logfile> <run.py args...>
       if [ -n "$(find "$logf" -mmin +"$STALL_MIN" 2>/dev/null)" ]; then
         mark "stall in '$*' (attempt $attempt) - restarting"
         kill -9 "$pid" 2>/dev/null
+        break                  # a killed child stays a zombie until waited on, so leave the loop
       fi
     done
     wait "$pid" && return 0

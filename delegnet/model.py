@@ -151,17 +151,18 @@ class DelegNet(nn.Module):
         if flags.use_proto:
             self.proto = PrototypeLayer(d, m["prototypes_per_class"])
 
-    def encode_code(self, tokens, idioms):
+    def encode_code(self, tokens, idioms, cached=None):
         parts = [self.idiom(idioms)]
         if self.flags.code == "transformer":
-            parts.insert(0, self.code_enc(tokens))
+            # the pre-trained encoder is frozen; its embeddings normally arrive precomputed (`cached`)
+            parts.insert(0, cached if cached is not None else self.code_enc(tokens))
         return self.code_proj(torch.cat(parts, 1))
 
     def forward(self, b: dict, edge_weight=None) -> dict:
         h = self.node_in(b["x"]) + self.role(b["role"]) + self.kind(b["is_contract"])
         code = None
         if self.flags.code != "none" and b["code_tokens"].shape[0]:
-            code = self.encode_code(b["code_tokens"], b["code_idioms"])
+            code = self.encode_code(b["code_tokens"], b["code_idioms"], b.get("code_emb"))
             slot = b["code_slot"]
             has = slot >= 0
             h = h.clone()

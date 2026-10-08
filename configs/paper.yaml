@@ -111,10 +111,10 @@ model:
   weight_decay: 0.0001
   epochs: 12
   patience: 3
-  batch_size: 32
-  epoch_samples: 10000        # contract-balanced draws per epoch
+  batch_size: 64
+  epoch_samples: 6000         # contract-balanced draws per epoch
   lambda_cluster: 0.05
   lambda_sep: 0.01
   lambda_div: 0.01
   pretrain_epochs: 30
-  device: mps            # Apple GPU; use cpu or cuda elsewhere
+  device: cpu            # Apple-GPU (mps) training hangs under the macOS GPU watchdog; cuda also works

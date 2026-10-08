@@ -65,6 +65,32 @@ class CodeBank:
         self.override = {}
         self.variants = {}      # (chain, node) -> mutated code variants used as training augmentation
         self.augment = False
+        self.encoder = None     # frozen pre-trained code encoder (kept on the CPU)
+        self.emb = {}           # token-sequence bytes -> embedding
+
+    def set_encoder(self, encoder):
+        """Use a frozen code encoder whose embeddings are computed once per distinct code on the
+        CPU. Long transformer kernels on the Apple GPU can hang under the macOS GPU watchdog, and
+        fine-tuning a transformer on ~40 training contracts per fold would overfit anyway."""
+        import copy as _copy
+        self.encoder = _copy.deepcopy(encoder).cpu().eval()
+        for p in self.encoder.parameters():
+            p.requires_grad_(False)
+        self.emb = {}
+
+    @torch.no_grad()
+    def embeddings(self, token_arrays):
+        missing = [t for t in {t.tobytes(): t for t in token_arrays}.values() if t.tobytes() not in self.emb]
+        for i in range(0, len(missing), 16):
+            chunk = missing[i:i + 16]
+            L = max(len(t) for t in chunk)
+            tok = np.zeros((len(chunk), L), dtype=np.int64)
+            for j, t in enumerate(chunk):
+                tok[j, :len(t)] = t
+            out = self.encoder(torch.as_tensor(tok))
+            for t, e in zip(chunk, out):
+                self.emb[t.tobytes()] = e
+        return torch.stack([self.emb[t.tobytes()] for t in token_arrays]) if token_arrays else None
 
     def get(self, chain, node):
         if (chain, node) in self.override:
@@ -76,19 +102,28 @@ class CodeBank:
             return None
         return g.code_tokens[node], g.code_idioms[node]
 
-    def prepare_augmentation(self, samples, k=3, seed=0):
-        """Disguised copies of every training contract, so the model cannot memorise exact bytecode."""
-        rng = random.Random(seed)
-        for s in samples:
-            key = (s["chain"], int(s["nodes"][s["centres"][2]]))
-            g = self.graphs[key[0]]
-            if key in self.variants or key[1] not in g.code_bytes:
-                continue
+    def prepare_augmentation(self, samples, k=3, cache: Path | None = None):
+        """Disguised copies of every training contract, so the model cannot memorise exact bytecode.
+
+        Mutating large contracts is slow, so variants are built once per contract and cached on
+        disk; every fold, seed and model reuses them (training rows only ever look up their own
+        contracts, so sharing the cache across folds leaks nothing)."""
+        if cache is not None and cache.exists() and not self.variants:
+            self.variants = pickle.loads(cache.read_bytes())
+        keys = {(s["chain"], int(s["nodes"][s["centres"][2]])) for s in samples}
+        todo = [k_ for k_ in sorted(keys) if k_ not in self.variants and k_[1] in self.graphs[k_[0]].code_bytes]
+        rng = random.Random(0)
+        for n, key in enumerate(todo):
+            raw0 = self.graphs[key[0]].code_bytes[key[1]]
             out = []
             for _ in range(k):
-                raw = mutate_bytecode(g.code_bytes[key[1]], rng, rng.uniform(0.5, 3.0))
+                raw = mutate_bytecode(raw0, rng, rng.uniform(0.5, 3.0))
                 out.append((encode_tokens(code_idioms.tokens(raw)), code_idioms.idioms(raw)))
             self.variants[key] = out
+            if n % 25 == 0:
+                log.info("code augmentation: %d/%d new contracts", n + 1, len(todo))
+        if todo and cache is not None:
+            cache.write_bytes(pickle.dumps(self.variants, protocol=pickle.HIGHEST_PROTOCOL))
 
     def mutate(self, chain, nodes, strength, seed):
         rng = random.Random(seed)
@@ -124,7 +159,10 @@ def collate(samples: list[dict], bank: CodeBank, device="cpu") -> dict:
         tok[i, :len(c[0])] = c[0]
     T = lambda a, dt=torch.float32: torch.as_tensor(np.concatenate(a) if isinstance(a, list) else a,  # noqa: E731
                                                      dtype=dt, device=device)
-    return dict(
+    extra = {}
+    if bank.encoder is not None and codes:
+        extra["code_emb"] = bank.embeddings([c[0] for c in codes]).to(device)
+    return dict(**extra,
         x=T(xs), role=T(roles, torch.long), is_contract=T(kinds, torch.long), code_slot=T(slots, torch.long),
         code_tokens=torch.as_tensor(tok, device=device),
         code_idioms=torch.as_tensor(np.stack([c[1] for c in codes]) if codes else np.zeros((0, 21), np.float32),
@@ -164,6 +202,8 @@ def _forward_safe(model, batch, bank, device):
 @torch.no_grad()
 def predict(model, samples, bank, bs=64, device="cpu") -> dict:
     model.eval()
+    if hasattr(model, "code_enc") and bank.encoder is None:   # e.g. a reloaded model in the analyses
+        bank.set_encoder(model.code_enc)
     p, z, d2 = [], [], []
     for i in range(0, len(samples), bs):
         out = _forward_safe(model, samples[i:i + bs], bank, device)
@@ -198,13 +238,17 @@ def train_model(cfg, variant: str, train: list, val: list, bank: CodeBank, seed:
     enc_path = Path(cfg["run_root"]) / "code_encoder.pt"
     if init is None and hasattr(model, "code_enc") and enc_path.exists() and "noPretrain" not in variant:
         model.code_enc.load_state_dict(torch.load(enc_path, map_location="cpu"))
+    if hasattr(model, "code_enc"):
+        for p in model.code_enc.parameters():
+            p.requires_grad_(False)
+        bank.set_encoder(model.code_enc)
     model.to(dev)
     opt = torch.optim.AdamW(model.parameters(), lr=lr or m["lr"], weight_decay=m["weight_decay"])
     val0 = [s for s in val if s["delta"] == 0] or val
     probs = contract_balanced_probs(train)
     n_epoch = min(len(train), m.get("epoch_samples", len(train)))
     if model.flags.code != "none":
-        bank.prepare_augmentation(train, seed=seed)
+        bank.prepare_augmentation(train, cache=Path(cfg["data_root"]) / "code_variants.pkl")
     best, best_ap, bad = None, -np.inf, 0
     for ep in range(epochs or m["epochs"]):
         model.train()
