@@ -69,6 +69,80 @@ def family_split(tg, frac, seed):
     return rest.iloc[:int(.7 * n)], rest.iloc[int(.7 * n):int(.85 * n)], rest.iloc[int(.85 * n):], ood
 
 
+def zeroday_folds(tg, k, seed):
+    """Leave-family-out CV: families of each class are dealt into k folds; a fold's families are
+    never seen in training. Validation uses whole held-out families too, so thresholds are honest."""
+    t = _labelled(tg)
+    fam_cls = t.groupby("family").label.agg(lambda s: int(s.mean() >= 0.5))
+    rng = np.random.default_rng(seed)
+    bins = {f: i % k for cls in (0, 1)
+            for i, f in enumerate(rng.permutation(fam_cls[fam_cls == cls].index.values))}
+    for fold in range(k):
+        test_f = {f for f, b in bins.items() if b == fold}
+        rest = t[~t.family.isin(test_f)]
+        rest_f = rest.groupby("family").label.agg(lambda s: int(s.mean() >= 0.5))
+        val_f = set()
+        sizes = rest.groupby("family").size()
+        for cls in (0, 1):
+            cand = list(rng.permutation(rest_f[rest_f == cls].index.values))
+            target, got = 0.15 * sizes[cand].sum(), 0
+            # whole families until ~15% of this class, always leaving at least one for training
+            for f in cand[:-1]:
+                if got >= target:
+                    break
+                val_f.add(f)
+                got += sizes[f]
+        val = rest[rest.family.isin(val_f)]
+        if val.label.nunique() < 2:    # too few families: fall back to a random validation slice
+            val = rest.sample(frac=0.15, random_state=seed)
+        yield fold, rest.drop(val.index), val, t[t.family.isin(test_f)]
+
+
+def run_zeroday(cfg, k=None, tag="zeroday"):
+    ex = cfg["experiment"]
+    src = ex["source_chain"]
+    out_dir = Path(cfg["run_root"]) / tag
+    out_dir.mkdir(parents=True, exist_ok=True)
+    g, tg = load_graph(cfg, src)
+    tg = tg.sort_values("event")
+    tg["rank_in_contract"] = tg.groupby("contract_node").cumcount() + 1
+    bank = CodeBank({src: g})
+    methods = ex.get(f"methods_{tag}") or ex.get("methods") or MAIN
+    ex = {**ex, "seeds": ex.get(f"seeds_{tag}", ex["seeds"])}
+    k = k or ex.get("zeroday_folds", 5)
+    frames, rows = [], []
+    for seed in ex["seeds"]:
+        for fold, tr, va, te in zeroday_folds(tg, k, seed):
+            if te.label.nunique() < 2 and not len(te):
+                continue
+            train = build_samples(cfg, src, tr, ex["train_checkpoints_s"])
+            val = build_samples(cfg, src, va, ex["train_checkpoints_s"])
+            test = build_samples(cfg, src, te, [0])
+            log.info("zeroday seed %d fold %d | train %d val %d test %d (%d families held out)",
+                     seed, fold, len(tr), len(va), len(te), te.family.nunique())
+            for method in methods:
+                preds, taus = _fit_predict(cfg, method, train, val, {"test": test}, bank, seed, out_dir)
+                df = _frame(test, preds["test"], method, seed, f"fold{fold}")
+                df["tau_fpr"], df["tau_f1"] = taus["tau_fpr"], taus["tau_f1"]
+                frames.append(df)
+        pr = pd.concat(frames)
+        pr = pr.merge(tg[["auth_id", "rank_in_contract", "family"]], on="auth_id", how="left")
+        pr.to_parquet(out_dir / "predictions.parquet", index=False)
+        # pooled over folds (each delegation is scored exactly once per seed, by a model that never saw its family)
+        for (method, sd), grp in pr[pr.seed == seed].groupby(["method", "seed"]):
+            for name, sub in (("all", grp), ("first10_per_contract", grp[grp.rank_in_contract <= 10])):
+                if sub.y.nunique() == 2:
+                    m = metrics(sub.y, sub.p, 0.5, 0.5)
+                    hit = (sub.p >= sub.tau_fpr)
+                    m["recall_at_fpr"] = float(hit[sub.y == 1].mean())
+                    m["fpr"] = float(hit[sub.y == 0].mean())
+                    hf = (sub.p >= sub.tau_f1)
+                    from sklearn.metrics import f1_score, matthews_corrcoef
+                    m["f1"], m["mcc"] = f1_score(sub.y, hf), matthews_corrcoef(sub.y, hf)
+                    rows.append(dict(method=method, seed=sd, split=name, **m))
+        pd.DataFrame(rows).to_csv(out_dir / "metrics.csv", index=False)
+
+
 def _fit_predict(cfg, method, train, val, tests: dict, bank, seed, out_dir):
     if method in BASELINES:
         m = BASELINES[method](seed) if method == "XGBoost" else BASELINES[method]()
@@ -104,13 +178,19 @@ def run_protocol(cfg, protocol: str, methods=None):
     out_dir.mkdir(parents=True, exist_ok=True)
     g, tg = load_graph(cfg, src)
     graphs = {src: g}
-    methods = methods or (MAIN + ABLATIONS if protocol == "temporal" else MAIN)
+    methods = methods or ex.get(f"methods_{protocol}") or ex.get("methods") or \
+        (MAIN + ABLATIONS if protocol == "temporal" else MAIN)
+    ex = {**ex, "seeds": ex.get(f"seeds_{protocol}", ex["seeds"])}
     rows, frames = [], []
 
     for seed in ex["seeds"]:
         if protocol in ("temporal", "crosschain"):
             tr, va, te = temporal_split(g, tg, ex["split"])
             test_sets = {"test": (src, te, ex["checkpoints_s"] if protocol == "temporal" else [0])}
+            # the hard, deployment-relevant slice: contracts never seen during training
+            new = te[~te.contract_node.isin(set(tr.contract_node) | set(va.contract_node))]
+            if new.label.nunique() == 2:
+                test_sets["test_unseen_contract"] = (src, new, [0])
         else:
             tr, va, te, ood = family_split(tg, ex["heldout_family_frac"], seed)
             test_sets = {"test_id": (src, te, [0]), "test_ood": (src, ood, [0])}
@@ -216,7 +296,7 @@ def run_analyses(cfg):
     test0 = build_samples(cfg, src, te, [0])
     val0 = build_samples(cfg, src, va, [0])
     train0 = build_samples(cfg, src, tr, [0])
-    seeds = ex["seeds"][:3]
+    seeds = ex.get("seeds_temporal", ex["seeds"])[:3]
 
     def load(method, seed, protocol="temporal"):
         f = root / protocol / "models" / f"{method}_s{seed}"

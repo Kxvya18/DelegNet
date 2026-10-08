@@ -277,6 +277,9 @@ def build_chain(cfg: dict, chain: str):
     lab = pd.read_parquet(root / "delegations.parquet")
     lab["event"] = g.auth_event[lab.auth_id.values]
     lab = lab[lab.event >= 0].copy()
+    # one target per (authority, contract): sweepers re-authorize the same victim many times, and
+    # near-duplicate targets would leak between train and test
+    lab = lab.sort_values("event").drop_duplicates(["authority", "delegate"], keep="first")
     lab["contract_node"] = g.dst[lab.event.values]
     lab["family"] = code_families(g, lab.contract_node.values)
     lab["campaign"] = campaigns(g, lab)

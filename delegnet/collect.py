@@ -32,6 +32,9 @@ RANGE_ERRORS = ("range", "too many", "limit", "exceed", "too large", "timeout", 
 NOT_ON_PLAN = ("plan", "upgrade", "archive", "personal token")
 
 
+DROPPED: list = []   # (lo, hi, error) ranges that could not be fetched
+
+
 class RPCError(Exception):
     pass
 
@@ -200,8 +203,11 @@ async def _split_range(fetch, lo: int, hi: int, min_span: int = 1):
         return await fetch(lo, hi)
     except RPCError as e:
         msg = str(e).lower()
-        if hi - lo < min_span or any(s in msg for s in NOT_ON_PLAN) or not any(s in msg for s in RANGE_ERRORS):
+        splittable = any(s in msg for s in RANGE_ERRORS)   # includes free-plan *timeouts*
+        if hi - lo < min_span or not splittable or (any(s in msg for s in NOT_ON_PLAN) and "timeout" not in msg):
+            # never silent: a dropped range is recorded so coverage can be reported and re-collected
             log.warning("dropping %d-%d: %s", lo, hi, e)
+            DROPPED.append((lo, hi, str(e)[:200]))
             return []
         mid = (lo + hi) // 2
         a = await _split_range(fetch, lo, mid, min_span)
@@ -226,7 +232,7 @@ async def native_transfers(rpc: RPC, addrs: list[str], lo: int, hi: int) -> list
                     return res
                 after += 1000
 
-        for t in await _split_range(fetch, lo, hi):
+        for t in await _split_range(fetch, lo, hi, min_span=50):
             if t.get("error"):
                 continue
             act = t["action"]
@@ -279,9 +285,13 @@ async def activity(rpc: RPC, out: Path, addrs: list[str], start: int, end: int, 
         f = out / f"a{i:06d}_{lo:010d}.parquet"
         if f.exists():
             return
+        before = len(DROPPED)
         rows = await native_transfers(rpc, group, lo, hi)
         if token_logs:
             rows += await token_transfers(rpc, group, lo, hi)
+        if len(DROPPED) > before:   # incomplete: leave no file so a rerun retries this job
+            log.warning("job a%06d_%d incomplete, will retry on rerun", i, lo)
+            return
         pd.DataFrame(rows, columns=TRANSFER_COLUMNS).to_parquet(f, index=False)
 
     for k in range(0, len(jobs), 16):
@@ -297,15 +307,17 @@ async def senders(rpc: RPC, out: Path, tx_hashes: list[str]):
     have = pd.read_parquet(f) if f.exists() else pd.DataFrame(columns=["tx_hash", "sender"])
     todo = sorted(set(tx_hashes) - set(have.tx_hash))
 
-    async def one(h):
+    async def group(hs):
         try:
-            tx = await rpc.call("eth_getTransactionByHash", [h])
-            return h, tx["from"].lower() if tx else None
+            txs = await rpc.batch("eth_getTransactionByHash", [[h] for h in hs])
         except RPCError:
-            return h, None
+            return [(h, None) for h in hs]
+        return [(h, tx["from"].lower() if tx else None) for h, tx in zip(hs, txs)]
 
     for i in range(0, len(todo), 1000):
-        res = await asyncio.gather(*(one(h) for h in todo[i:i + 1000]))
+        chunk = todo[i:i + 1000]
+        res = [r for part in await asyncio.gather(*(group(chunk[j:j + 20]) for j in range(0, len(chunk), 20)))
+               for r in part]
         have = pd.concat([have, pd.DataFrame(res, columns=["tx_hash", "sender"]).dropna()])
         have.to_parquet(f, index=False)
         log.info("senders: %d/%d", min(i + 1000, len(todo)), len(todo))

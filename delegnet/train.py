@@ -63,14 +63,32 @@ class CodeBank:
     def __init__(self, graphs: dict):
         self.graphs = graphs
         self.override = {}
+        self.variants = {}      # (chain, node) -> mutated code variants used as training augmentation
+        self.augment = False
 
     def get(self, chain, node):
         if (chain, node) in self.override:
             return self.override[(chain, node)]
+        if self.augment and (chain, node) in self.variants and random.random() < 0.5:
+            return random.choice(self.variants[(chain, node)])
         g = self.graphs[chain]
         if node not in g.code_tokens:
             return None
         return g.code_tokens[node], g.code_idioms[node]
+
+    def prepare_augmentation(self, samples, k=3, seed=0):
+        """Disguised copies of every training contract, so the model cannot memorise exact bytecode."""
+        rng = random.Random(seed)
+        for s in samples:
+            key = (s["chain"], int(s["nodes"][s["centres"][2]]))
+            g = self.graphs[key[0]]
+            if key in self.variants or key[1] not in g.code_bytes:
+                continue
+            out = []
+            for _ in range(k):
+                raw = mutate_bytecode(g.code_bytes[key[1]], rng, rng.uniform(0.5, 3.0))
+                out.append((encode_tokens(code_idioms.tokens(raw)), code_idioms.idioms(raw)))
+            self.variants[key] = out
 
     def mutate(self, chain, nodes, strength, seed):
         rng = random.Random(seed)
@@ -126,14 +144,32 @@ def set_seed(seed):
 
 
 @torch.no_grad()
-def predict(model, samples, bank, bs=128, device="cpu") -> dict:
+def _forward_safe(model, batch, bank, device):
+    """Forward pass that survives macOS aborting GPU work ("Impacting Interactivity"):
+    retry on the GPU, then fall back to the CPU for this batch. Outputs are checked for NaN."""
+    for attempt in range(3):
+        try:
+            out = model(collate(batch, bank, device))
+            if torch.isfinite(out["logit"]).all():
+                return {k: v.cpu() for k, v in out.items()}
+            raise RuntimeError("non-finite output")
+        except (RuntimeError, getattr(torch, "AcceleratorError", RuntimeError)) as e:
+            log.warning("predict batch failed on %s (%s), retry %d", device, str(e)[:60], attempt)
+    model.to("cpu")
+    out = model(collate(batch, bank, "cpu"))
+    model.to(device)
+    return {k: v.cpu() for k, v in out.items()}
+
+
+@torch.no_grad()
+def predict(model, samples, bank, bs=64, device="cpu") -> dict:
     model.eval()
     p, z, d2 = [], [], []
     for i in range(0, len(samples), bs):
-        out = model(collate(samples[i:i + bs], bank, device))
-        p.append(torch.sigmoid(out["logit"]).cpu()); z.append(out["z"].cpu())
+        out = _forward_safe(model, samples[i:i + bs], bank, device)
+        p.append(torch.sigmoid(out["logit"])); z.append(out["z"])
         if "d2" in out:
-            d2.append(out["d2"].cpu())
+            d2.append(out["d2"])
     res = dict(p=torch.cat(p).numpy(), z=torch.cat(z).numpy())
     if d2:
         res["d2"] = torch.cat(d2).numpy()
@@ -144,8 +180,12 @@ def _loss(model, out, y, m):
     pos = (y == 0).sum().clamp_min(1) / (y == 1).sum().clamp_min(1)
     loss = F.binary_cross_entropy_with_logits(out["logit"], y, pos_weight=pos)
     if "d2" in out:
+        # prototype module: its own classification loss (so prototypes stay class-meaningful
+        # for explanations) plus ProtoPNet clustering / separation / diversity terms
+        ploss = F.binary_cross_entropy_with_logits(out["proto_logit"], y, pos_weight=pos)
         cl, sep, div = model.proto.losses(out["d2"], y)
-        loss = loss + m["lambda_cluster"] * cl + m["lambda_sep"] * sep + m["lambda_div"] * div
+        loss = loss + m.get("lambda_proto", 0.3) * ploss + m["lambda_cluster"] * cl \
+            + m["lambda_sep"] * sep + m["lambda_div"] * div
     return loss
 
 
@@ -161,21 +201,47 @@ def train_model(cfg, variant: str, train: list, val: list, bank: CodeBank, seed:
     model.to(dev)
     opt = torch.optim.AdamW(model.parameters(), lr=lr or m["lr"], weight_decay=m["weight_decay"])
     val0 = [s for s in val if s["delta"] == 0] or val
-    best, best_ap, bad = None, -1, 0
+    probs = contract_balanced_probs(train)
+    n_epoch = min(len(train), m.get("epoch_samples", len(train)))
+    if model.flags.code != "none":
+        bank.prepare_augmentation(train, seed=seed)
+    best, best_ap, bad = None, -np.inf, 0
     for ep in range(epochs or m["epochs"]):
         model.train()
-        order = np.random.permutation(len(train))
+        bank.augment = model.flags.code != "none"
+        # every contract weighs the same per epoch: a few giant sweeper campaigns must not
+        # teach the model "this exact contract = scam" instead of transferable behaviour
+        order = np.random.choice(len(train), n_epoch, replace=True, p=probs)
         for i in range(0, len(order), m["batch_size"]):
-            b = collate([train[j] for j in order[i:i + m["batch_size"]]], bank, dev)
-            loss = _loss(model, model(b), b["y"], m)
-            opt.zero_grad()
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            opt.step()
-        ap = average_precision_score([s["y"] for s in val0], predict(model, val0, bank, device=dev)["p"])
-        log.info("%s seed %d epoch %d val AP %.4f", variant, seed, ep, ap)
-        if ap > best_ap + 1e-4:
-            best, best_ap, bad = copy.deepcopy(model.state_dict()), ap, 0
+            batch = [train[j] for j in order[i:i + m["batch_size"]]]
+            for attempt in range(3):
+                try:
+                    b = collate(batch, bank, dev)
+                    loss = _loss(model, model(b), b["y"], m)
+                    if not torch.isfinite(loss):
+                        raise RuntimeError("non-finite loss")
+                    opt.zero_grad()
+                    loss.backward()
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                    opt.step()
+                    break
+                except (RuntimeError, getattr(torch, "AcceleratorError", RuntimeError)) as e:
+                    # macOS may abort long GPU command buffers ("Impacting Interactivity");
+                    # the step's outputs are garbage then, so redo it rather than crash
+                    log.warning("step failed (%s), retry %d", str(e)[:80], attempt)
+                    opt.zero_grad()
+        bank.augment = False
+        yv = np.array([s["y"] for s in val0])
+        pv = np.clip(predict(model, val0, bank, device=dev)["p"], 1e-6, 1 - 1e-6)
+        ap = average_precision_score(yv, pv)
+        # AP saturates at 1.0 quickly on this task, so model selection uses class-balanced
+        # validation log-loss, which keeps distinguishing well-calibrated from lucky epochs
+        w = np.where(yv == 1, 0.5 / max(yv.mean(), 1e-6), 0.5 / max(1 - yv.mean(), 1e-6))
+        vloss = float(-(w * (yv * np.log(pv) + (1 - yv) * np.log(1 - pv))).mean())
+        log.info("%s seed %d epoch %d val AP %.4f val loss %.4f", variant, seed, ep, ap, vloss)
+        score = -vloss
+        if score > best_ap + 1e-4:
+            best, best_ap, bad = copy.deepcopy(model.state_dict()), score, 0
         else:
             bad += 1
             if bad >= m["patience"]:
@@ -186,6 +252,13 @@ def train_model(cfg, variant: str, train: list, val: list, bank: CodeBank, seed:
     return model
 
 
+def contract_balanced_probs(samples) -> np.ndarray:
+    """Sampling probabilities giving every (contract, class) group equal total weight."""
+    keys = pd.Series([(int(s["nodes"][s["centres"][2]]), s["y"]) for s in samples])
+    w = 1.0 / keys.map(keys.value_counts()).values
+    return w / w.sum()
+
+
 def _project_and_tune(model, train, bank, m, dev):
     """ProtoPNet step: snap prototypes to real training delegations, then refit only the
     prototype->class weights so every prediction is explained by real examples."""
@@ -193,19 +266,7 @@ def _project_and_tune(model, train, bank, m, dev):
     out = predict(model, base, bank, device=dev)
     model.proto.project(torch.as_tensor(out["z"], device=dev), torch.tensor([s["y"] for s in base], device=dev),
                         torch.tensor([s["auth_id"] for s in base], device=dev))
-    for p in model.parameters():
-        p.requires_grad_(False)
-    model.proto.last.requires_grad_(True)
-    opt = torch.optim.Adam([model.proto.last], lr=m["lr"])
-    for _ in range(5):
-        order = np.random.permutation(len(train))
-        for i in range(0, len(order), m["batch_size"]):
-            b = collate([train[j] for j in order[i:i + m["batch_size"]]], bank, dev)
-            o = model(b)
-            loss = F.binary_cross_entropy_with_logits(o["logit"], b["y"]) + 1e-4 * model.proto.last.abs().sum()
-            opt.zero_grad(); loss.backward(); opt.step()
-    for p in model.parameters():
-        p.requires_grad_(True)
+    # prototypes now explain the prediction head's embedding; no prediction weights change here
 
 
 # ------------------------------------------------------------------ code pre-training
@@ -231,27 +292,35 @@ def pretrain_code_encoder(cfg):
     raws = [g.code_bytes[n] for n in nodes if n in g.code_bytes]
     log.info("pre-training code encoder on %d contracts", len(raws))
     set_seed(0)
-    enc = CodeEncoder(m["dim"], m["code_layers"], m["heads"], m["code_len"], m["dropout"])
-    head = torch.nn.Sequential(torch.nn.Linear(m["dim"], m["dim"]), torch.nn.GELU(), torch.nn.Linear(m["dim"], 64))
+    dev = m["device"]
+    enc = CodeEncoder(m["dim"], m["code_layers"], m["heads"], m["code_len"], m["dropout"]).to(dev)
+    head = torch.nn.Sequential(torch.nn.Linear(m["dim"], m["dim"]), torch.nn.GELU(),
+                               torch.nn.Linear(m["dim"], 64)).to(dev)
     opt = torch.optim.AdamW(list(enc.parameters()) + list(head.parameters()), lr=5e-4)
     rng, prng = np.random.default_rng(0), random.Random(0)
+    # disguised copies are expensive to make, so build a pool once and sample from it
+    pool = {}
+    for i, raw in enumerate(raws):
+        pool[i] = [encode_tokens(code_idioms.tokens(raw), m["code_len"])] + \
+                  [encode_tokens(code_idioms.tokens(mutate_bytecode(raw, prng, prng.uniform(0.5, 3))), m["code_len"])
+                   for _ in range(4)]
+    idx = list(range(len(raws)))
 
-    def view(raw):
-        mutated = mutate_bytecode(raw, prng, prng.uniform(0, 3))
-        return _augment(encode_tokens(code_idioms.tokens(mutated), m["code_len"]), rng)
+    def view(i):
+        return _augment(pool[i][prng.randrange(len(pool[i]))], rng)
 
     def pad(seqs):
         out = np.zeros((len(seqs), max(map(len, seqs))), dtype=np.int64)
         for i, s in enumerate(seqs):
             out[i, :len(s)] = s
-        return torch.as_tensor(out)
+        return torch.as_tensor(out, device=dev)
 
     bs = 128
     for ep in range(m["pretrain_epochs"]):
-        prng.shuffle(raws)
+        prng.shuffle(idx)
         tot = 0.0
-        for i in range(0, len(raws) - 1, bs):
-            batch = raws[i:i + bs]
+        for i in range(0, len(idx) - 1, bs):
+            batch = idx[i:i + bs]
             if len(batch) < 2:
                 continue
             z1 = F.normalize(head(enc(pad([view(r) for r in batch]))), dim=1)
@@ -260,10 +329,10 @@ def pretrain_code_encoder(cfg):
             sim = z @ z.t() / 0.1
             sim.fill_diagonal_(-1e9)
             n = len(batch)
-            target = torch.cat([torch.arange(n, 2 * n), torch.arange(n)])
+            target = torch.cat([torch.arange(n, 2 * n), torch.arange(n)]).to(dev)
             loss = F.cross_entropy(sim, target)
             opt.zero_grad(); loss.backward(); opt.step()
             tot += loss.item()
         log.info("pretrain epoch %d loss %.4f", ep, tot)
-    Path(cfg["run_root"]).mkdir(exist_ok=True)
-    torch.save(enc.state_dict(), Path(cfg["run_root"]) / "code_encoder.pt")
+    Path(cfg["run_root"]).mkdir(parents=True, exist_ok=True)
+    torch.save({k: v.cpu() for k, v in enc.state_dict().items()}, Path(cfg["run_root"]) / "code_encoder.pt")

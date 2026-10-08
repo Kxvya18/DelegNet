@@ -73,9 +73,14 @@ class HeteroTemporalAttention(nn.Module):
         self.h, self.dh, self.flags = heads, d // heads, flags
         din = d + edim + (tdim if flags.use_time else 0)
         n_rel = n_rel if flags.use_rel else 1
+        self.n_rel, self.d = n_rel, d
         self.q = nn.Linear(d, d)
-        self.k = nn.ModuleList(nn.Linear(din, d) for _ in range(n_rel))
-        self.v = nn.ModuleList(nn.Linear(din, d) for _ in range(n_rel))
+        # shared key/value projection, modulated per relation (FiLM): cheap on GPU, still relation-aware
+        self.kv = nn.Linear(din, 2 * d)
+        self.rel_scale = nn.Embedding(n_rel, 2 * d)
+        self.rel_shift = nn.Embedding(n_rel, 2 * d)
+        nn.init.zeros_(self.rel_scale.weight)
+        nn.init.zeros_(self.rel_shift.weight)
         self.o = nn.Linear(d, d)
         self.n1, self.n2 = nn.LayerNorm(d), nn.LayerNorm(d)
         self.ff = nn.Sequential(nn.Linear(d, 2 * d), nn.GELU(), nn.Dropout(dropout), nn.Linear(2 * d, d))
@@ -86,13 +91,8 @@ class HeteroTemporalAttention(nn.Module):
         parts = [h[src], efeat] + ([tfeat] if self.flags.use_time else [])
         inp = torch.cat(parts, 1)
         rel = rel if self.flags.use_rel else torch.zeros_like(rel)
-        k = torch.empty(E, h.shape[1], device=h.device)
-        v = torch.empty_like(k)
-        for r in range(len(self.k)):
-            m = rel == r
-            if m.any():
-                k[m], v[m] = self.k[r](inp[m]), self.v[r](inp[m])
-        k, v = k.view(E, self.h, self.dh), v.view(E, self.h, self.dh)
+        kv = self.kv(inp) * (1 + self.rel_scale(rel)) + self.rel_shift(rel)
+        k, v = kv[:, :self.d].reshape(E, self.h, self.dh), kv[:, self.d:].reshape(E, self.h, self.dh)
         if self.flags.attention:
             q = self.q(h).view(n, self.h, self.dh)[dst]
             score = (q * k).sum(-1) / math.sqrt(self.dh)
@@ -145,10 +145,11 @@ class DelegNet(nn.Module):
             self.motif = nn.Sequential(nn.Linear(len(MOTIF_NAMES), d), nn.GELU(), nn.Linear(d, d))
         head_in = 3 * d + len(AUTH_FEATS) + (d if flags.code != "none" else 0) + (d if flags.use_motifs else 0)
         self.readout = nn.Sequential(nn.Linear(head_in, d), nn.GELU(), nn.Dropout(m["dropout"]), nn.Linear(d, d))
+        # prediction always comes from a standard head; the prototype layer runs alongside it
+        # as the explanation / novelty module (it is trained jointly but does not gate accuracy)
+        self.out = nn.Sequential(nn.GELU(), nn.Linear(d, 1))
         if flags.use_proto:
             self.proto = PrototypeLayer(d, m["prototypes_per_class"])
-        else:
-            self.out = nn.Sequential(nn.GELU(), nn.Linear(d, 1))
 
     def encode_code(self, tokens, idioms):
         parts = [self.idiom(idioms)]
@@ -185,7 +186,8 @@ class DelegNet(nn.Module):
         if self.flags.use_motifs:
             parts.append(self.motif(b["motifs"]))
         z = self.readout(torch.cat(parts, 1))
+        out = dict(logit=self.out(z).squeeze(1), z=z)
         if self.flags.use_proto:
-            logit, sim, d2 = self.proto(z)
-            return dict(logit=logit, z=z, sim=sim, d2=d2)
-        return dict(logit=self.out(z).squeeze(1), z=z)
+            plogit, sim, d2 = self.proto(z)
+            out.update(proto_logit=plogit, sim=sim, d2=d2)
+        return out
