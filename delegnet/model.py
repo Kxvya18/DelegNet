@@ -29,6 +29,7 @@ class Flags:
     use_motifs: bool = True
     use_proto: bool = True
     memory: bool = True           # code-pattern retrieval memory (similarity to known scam / benign code)
+    evidence_dropout: bool = True # train with sibling evidence hidden on a share of rows (first-victim skill)
 
 
 VARIANTS = {
@@ -39,14 +40,17 @@ VARIANTS = {
     "DelegNet-idiomsOnly": Flags(code="idioms"),
     "DelegNet-noTime":     Flags(use_time=False),
     "DelegNet-noRel":      Flags(use_rel=False),
-    "TGAT":                Flags(code="none", use_motifs=False, use_proto=False, use_rel=False, memory=False),
+    "TGAT":                Flags(code="none", use_motifs=False, use_proto=False, use_rel=False, memory=False,
+                                 evidence_dropout=False),
     "StaticGAT":           Flags(code="none", use_motifs=False, use_proto=False, use_rel=False, use_time=False,
-                                 memory=False),
+                                 memory=False, evidence_dropout=False),
     "GraphSAGE":           Flags(code="none", use_motifs=False, use_proto=False, use_rel=False, use_time=False,
-                                 attention=False, memory=False),
+                                 attention=False, memory=False, evidence_dropout=False),
     "DelegNet-noPretrain": Flags(),
     "DelegNet-noMemory":   Flags(memory=False),
-    "MLP+Code":            Flags(use_graph=False, use_motifs=False, use_proto=False, memory=False),
+    "DelegNet-noEvidenceDropout": Flags(evidence_dropout=False),
+    "MLP+Code":            Flags(use_graph=False, use_motifs=False, use_proto=False, memory=False,
+                                 evidence_dropout=False),
 }
 
 

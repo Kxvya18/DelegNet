@@ -19,7 +19,13 @@ from .evm import mutate_bytecode
 from .graph import encode_tokens, load_graph
 from .model import VARIANTS, CodeEncoder, DelegNet
 from .patterns import code_idioms
-from .patterns.motifs import motif_vector
+from .graph import NODE_FEATS
+from .patterns.motifs import MOTIF_NAMES, motif_vector
+
+# features that exist only because earlier delegators of the same contract were observed
+SIBLING_MOTIFS = [MOTIF_NAMES.index(n) for n in MOTIF_NAMES if n.startswith("sib_")] + \
+    [MOTIF_NAMES.index("sink_fanout"), MOTIF_NAMES.index("sponsor_funded_by_sink")]
+SIBLING_NODE_FEATS = [NODE_FEATS.index(n) for n in ("delegated_to", "new_sponsor", "in_cnt", "new_cp")]
 
 log = logging.getLogger("train")
 _G = None  # graph shared with forked workers
@@ -66,6 +72,7 @@ class CodeBank:
         self.override = {}
         self.variants = {}      # (chain, node) -> mutated code variants used as training augmentation
         self.augment = False
+        self.evidence_dropout = 0.0   # share of training rows whose sibling evidence is hidden
         self.encoder = None     # frozen pre-trained code encoder (kept on the CPU)
         self.emb = {}           # token-sequence bytes -> embedding
         self.memory = []        # code-pattern memory: (family, 4-gram set, label) of training contracts
@@ -213,17 +220,27 @@ def collate(samples: list[dict], bank: CodeBank, device="cpu") -> dict:
     extra = {}
     if bank.encoder is not None and codes:
         extra["code_emb"] = bank.embeddings([c[0] for c in codes]).to(device)
+    motifs = np.stack([s["motifs"] for s in samples])
+    xs_cat = np.concatenate(xs)
+    if bank.augment and bank.evidence_dropout > 0:
+        # evidence dropout: hide everything derived from earlier delegators of the same contract
+        # for a random subset, so the model also learns to judge first victims (no sibling history)
+        hide = np.random.rand(len(samples)) < bank.evidence_dropout
+        motifs[np.ix_(hide, SIBLING_MOTIFS)] = 0.0
+        offs = np.cumsum([0] + [len(s["nodes"]) for s in samples[:-1]])
+        rows = (offs + np.array([s["centres"][2] for s in samples]))[hide]
+        xs_cat[np.ix_(rows, SIBLING_NODE_FEATS)] = 0.0
     extra["pattern_sims"] = torch.as_tensor(
         [bank.pattern_sims(s["chain"], int(s["nodes"][s["centres"][2]])) for s in samples],
         dtype=torch.float32, device=device)
     return dict(**extra,
-        x=T(xs), role=T(roles, torch.long), is_contract=T(kinds, torch.long), code_slot=T(slots, torch.long),
+        x=T(xs_cat), role=T(roles, torch.long), is_contract=T(kinds, torch.long), code_slot=T(slots, torch.long),
         code_tokens=torch.as_tensor(tok, device=device),
         code_idioms=torch.as_tensor(np.stack([c[1] for c in codes]) if codes else np.zeros((0, 21), np.float32),
                                     device=device),
         esrc=T(es, torch.long), edst=T(ed, torch.long), etype=T(et, torch.long), edt=T(edt), efeat=T(ef),
         centres=torch.as_tensor(np.stack(cen), device=device),
-        motifs=torch.as_tensor(np.stack([s["motifs"] for s in samples]), device=device),
+        motifs=torch.as_tensor(motifs, device=device),
         authf=torch.as_tensor(np.stack([s["authf"] for s in samples]), device=device),
         y=torch.as_tensor([s["y"] for s in samples], dtype=torch.float32, device=device),
     )
@@ -302,6 +319,7 @@ def train_model(cfg, variant: str, train: list, val: list, bank: CodeBank, seed:
         bank.set_encoder(model.code_enc)
     if model.flags.memory and init is None:
         bank.build_memory(train)
+    bank.evidence_dropout = m.get("evidence_dropout", 0.0) if model.flags.evidence_dropout else 0.0
     model.to(dev)
     opt = torch.optim.AdamW(model.parameters(), lr=lr or m["lr"], weight_decay=m["weight_decay"])
     val0 = [s for s in val if s["delta"] == 0] or val

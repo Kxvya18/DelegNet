@@ -90,7 +90,8 @@ experiment:
   # zero-day is the headline result: main methods with 3 seeds; ablations with 1 seed
   methods_zeroday: [HashBlocklist, OpcodeKNN, XGBoost, GraphSAGE, TGAT, DelegNet]
   seeds_zeroday_ablation: [0]
-  methods_zeroday_ablation: [DelegNet-noMemory, DelegNet-noProto, DelegNet-noMotif, DelegNet-noCode, DelegNet-noTime]
+  methods_zeroday_ablation: [DelegNet-noEvidenceDropout, DelegNet-noMemory, DelegNet-noProto, DelegNet-noMotif,
+                             DelegNet-noCode, DelegNet-noTime]
   seeds_temporal: [0]
   methods_temporal: [HashBlocklist, OpcodeKNN, XGBoost, GraphSAGE, TGAT, DelegNet]
   seeds_family: [0]
@@ -120,6 +121,7 @@ model:
   patience: 3
   batch_size: 64
   epoch_samples: 6000         # contract-balanced draws per epoch
+  evidence_dropout: 0.5       # share of training rows seen as first victims (sibling evidence hidden)
   lambda_cluster: 0.05
   lambda_sep: 0.01
   lambda_div: 0.01
