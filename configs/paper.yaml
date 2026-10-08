@@ -99,12 +99,19 @@ experiment:
   methods_crosschain: [HashBlocklist, OpcodeKNN, XGBoost, TGAT, DelegNet]
   mutation_strengths: [0, 0.5, 1, 2, 4]
 
+tuning:                          # equal budget per method, validation families only
+  methods: [DelegNet, TGAT, GraphSAGE, XGBoost]
+  trials: 6
+  epoch_samples: 3000
+  epochs: 15
+
 model:
   dim: 128
   heads: 4
   layers: 2
   dropout: 0.1
   code_len: 512
+  code_dim: 128              # pre-trained code encoder width (fixed; `dim` is tuned)
   code_layers: 2
   prototypes_per_class: 10
   lr: 0.001

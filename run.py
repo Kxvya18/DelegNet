@@ -4,7 +4,9 @@
   python run.py label    --chain ethereum
   python run.py build    --chain ethereum          # temporal graph, motifs, code features
   python run.py pretrain                           # contrastive code encoder
+  python run.py tune                               # equal-budget search on validation families
   python run.py experiment --protocol temporal     # temporal | family | crosschain
+  python run.py diagnose                           # overfitting / leakage checks for zero-day
   python run.py analyse                            # early warning, robustness, open-set, explanations
   python run.py report
 """
@@ -129,6 +131,12 @@ def main():
             run_zeroday(cfg, tag=args.protocol)
         else:
             run_protocol(cfg, args.protocol)
+    elif args.stage == "tune":
+        from delegnet.tuning import run_tuning
+        run_tuning(cfg)
+    elif args.stage == "diagnose":
+        from delegnet.diagnostics import run_diagnostics
+        run_diagnostics(cfg)
     elif args.stage == "analyse":
         from delegnet.experiments import run_analyses
         run_analyses(cfg)

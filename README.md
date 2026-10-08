@@ -46,7 +46,7 @@ One-shot scripts (resumable):
 
 ```bash
 scripts/run_pipeline.sh ethereum        # collect -> label -> build graph
-scripts/run_experiments.sh              # pretrain, all protocols, analyses, report
+scripts/run_experiments.sh              # pretrain, tune, all protocols, diagnostics, analyses, report
 scripts/run_experiments.sh temporal     # resume from specific protocols
 ```
 
@@ -57,11 +57,13 @@ python run.py collect --chain ethereum --steps scan,sample,code,activity,hop2   
 python run.py label   --chain ethereum
 python run.py build   --chain ethereum
 python run.py pretrain
+python run.py tune                                    # equal-budget search, validation families only
 python run.py experiment --protocol zeroday           # headline: unseen contract families
 python run.py experiment --protocol zeroday_ablation  # component ablations on the same folds
 python run.py experiment --protocol temporal
 python run.py experiment --protocol family
 python run.py experiment --protocol crosschain        # needs built target chains
+python run.py diagnose                                # overfitting / leakage checks
 python run.py analyse
 python run.py report
 pytest -q tests

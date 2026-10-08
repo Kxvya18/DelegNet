@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import dataclasses
 import hashlib
 import logging
 import multiprocessing as mp
@@ -234,7 +235,8 @@ def train_model(cfg, variant: str, train: list, val: list, bank: CodeBank, seed:
     m = cfg["model"]
     set_seed(seed)
     dev = m["device"]
-    model = copy.deepcopy(init) if init is not None else DelegNet(m, VARIANTS[variant])
+    flags = dataclasses.replace(VARIANTS[variant], **m.get("flag_overrides", {}).get(variant, {}))
+    model = copy.deepcopy(init) if init is not None else DelegNet(m, flags)
     enc_path = Path(cfg["run_root"]) / "code_encoder.pt"
     if init is None and hasattr(model, "code_enc") and enc_path.exists() and "noPretrain" not in variant:
         state = torch.load(enc_path, map_location="cpu")
@@ -340,9 +342,9 @@ def pretrain_code_encoder(cfg):
     log.info("pre-training code encoder on %d contracts", len(raws))
     set_seed(0)
     dev = m["device"]
-    enc = CodeEncoder(m["dim"], m["code_layers"], m["heads"], m["code_len"], m["dropout"]).to(dev)
-    head = torch.nn.Sequential(torch.nn.Linear(m["dim"], m["dim"]), torch.nn.GELU(),
-                               torch.nn.Linear(m["dim"], 64)).to(dev)
+    cd = m.get("code_dim", m["dim"])
+    enc = CodeEncoder(cd, m["code_layers"], m["heads"], m["code_len"], m["dropout"]).to(dev)
+    head = torch.nn.Sequential(torch.nn.Linear(cd, cd), torch.nn.GELU(), torch.nn.Linear(cd, 64)).to(dev)
     opt = torch.optim.AdamW(list(enc.parameters()) + list(head.parameters()), lr=5e-4)
     rng, prng = np.random.default_rng(0), random.Random(0)
     # disguised copies are expensive to make, so build a pool once and sample from it

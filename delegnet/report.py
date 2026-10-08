@@ -44,6 +44,23 @@ def make_report(cfg):
             tex.to_latex(rep / f"table_{protocol}_{split}.tex", escape=False)
             num.round(4).to_csv(rep / f"table_{protocol}_{split}.csv")
 
+    zd = root / "zeroday" / "metrics.csv"
+    if zd.exists():   # headline: zero-day, per slice, mean ± std over seeds (ensembles have seed -1)
+        df = pd.read_csv(zd)
+        for split, grp in df.groupby("split"):
+            num = grp.groupby("method")[["auroc", "auprc", "f1", "mcc", "recall_at_fpr"]].mean()
+            tex = _bold_best(_pm(grp, "method", ["auroc", "auprc", "f1", "mcc", "recall_at_fpr"]), num,
+                             ["auroc", "auprc", "f1", "mcc", "recall_at_fpr"])
+            tex.to_latex(rep / f"table_zeroday_{split}.tex", escape=False)
+            num.round(4).to_csv(rep / f"table_zeroday_{split}.csv")
+    diag = root / "diagnostics"
+    if diag.exists():
+        for name in ("buckets", "contract_level", "significance", "gaps", "label_shuffle_summary"):
+            f = diag / f"{name}.csv"
+            if f.exists():
+                d = pd.read_csv(f)
+                keys = [k for k in ("method", "bucket", "slice", "metric", "vs") if k in d and name != "label_shuffle_summary"]
+                (d.groupby(keys).mean(numeric_only=True) if keys else d).round(4).to_csv(rep / f"diag_{name}.csv")
     sig = root / "temporal" / "significance.csv"
     if sig.exists():
         s = pd.read_csv(sig)

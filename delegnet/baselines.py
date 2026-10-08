@@ -91,14 +91,14 @@ def tabular(samples, bank) -> np.ndarray:
 class XGBoost:
     name = "XGBoost"
 
-    def __init__(self, seed=0):
-        self.seed = seed
+    def __init__(self, seed=0, params=None):
+        self.seed, self.params = seed, params or {}
 
     def fit(self, train, val, bank):
         X, y = tabular(train, bank), np.array([s["y"] for s in train])
         v0 = [s for s in val if s["delta"] == 0] or val
         Xv, yv = tabular(v0, bank), np.array([s["y"] for s in v0])
-        self.raw = xgb_worker.call(xgb_worker.fit, X, y, Xv, yv, self.seed)
+        self.raw = xgb_worker.call(xgb_worker.fit, X, y, Xv, yv, self.seed, self.params)
         return self
 
     def predict(self, samples, bank):

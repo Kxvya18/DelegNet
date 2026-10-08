@@ -133,11 +133,12 @@ class DelegNet(nn.Module):
         self.role = nn.Embedding(4, d)
         self.kind = nn.Embedding(2, d)
         self.tenc = TimeEncoding(32)
+        cd = m.get("code_dim", d)   # width of the (pre-trained, frozen) code encoder, independent of `dim`
         if flags.code == "transformer":
-            self.code_enc = CodeEncoder(d, m["code_layers"], m["heads"], m["code_len"], m["dropout"])
+            self.code_enc = CodeEncoder(cd, m["code_layers"], m["heads"], m["code_len"], m["dropout"])
         if flags.code != "none":
             self.idiom = nn.Linear(len(IDIOM_NAMES), d)
-            self.code_proj = nn.Linear(2 * d if flags.code == "transformer" else d, d)
+            self.code_proj = nn.Linear(cd + d if flags.code == "transformer" else d, d)
         if flags.use_graph:
             self.layers = nn.ModuleList(HeteroTemporalAttention(d, m["heads"], 2 * N_REL, len(EDGE_FEATS), 32,
                                                                 m["dropout"], flags) for _ in range(m["layers"]))

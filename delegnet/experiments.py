@@ -133,13 +133,27 @@ def run_zeroday(cfg, k=None, tag="zeroday"):
                 df.to_parquet(parts / f"{method}_s{seed}_f{fold}.parquet", index=False)  # checkpoint
                 frames.append(df)
     pr = pd.concat(frames)
-    pr = pr.merge(tg[["auth_id", "rank_in_contract", "family"]], on="auth_id", how="left")
+    pr = pr.merge(tg[["auth_id", "rank_in_contract", "family", "contract_node"]], on="auth_id", how="left")
+    # seed ensemble: the same averaging is applied to every method trained with more than one seed
+    ens = []
+    for method, grp in pr.groupby("method"):
+        if grp.seed.nunique() > 1:
+            # folds differ per seed, but every delegation is scored exactly once per seed
+            e = grp.groupby("auth_id", as_index=False).agg(
+                p=("p", "mean"), y=("y", "first"), tau_fpr=("tau_fpr", "mean"), tau_f1=("tau_f1", "mean"),
+                delta=("delta", "first"), cutoff=("cutoff", "first"), rank_in_contract=("rank_in_contract", "first"),
+                family=("family", "first"), contract_node=("contract_node", "first"))
+            e["method"], e["seed"], e["split"] = f"{method} (ensemble)", -1, "pooled"
+            ens.append(e)
+    pr = pd.concat([pr] + ens, ignore_index=True)
     pr.to_parquet(out_dir / "predictions.parquet", index=False)
     # pooled over folds: each delegation is scored once per seed, by a model that never saw its family
     from sklearn.metrics import f1_score, matthews_corrcoef
     rows = []
+    slices = {"all": lambda g: g, "first1_per_contract": lambda g: g[g.rank_in_contract == 1],
+              "first10_per_contract": lambda g: g[g.rank_in_contract <= 10]}
     for (method, sd), grp in pr.groupby(["method", "seed"]):
-        for name, sub in (("all", grp), ("first10_per_contract", grp[grp.rank_in_contract <= 10])):
+        for name, sub in ((n, f(grp)) for n, f in slices.items()):
             if sub.y.nunique() == 2:
                 m = metrics(sub.y, sub.p, 0.5, 0.5)
                 hit = (sub.p >= sub.tau_fpr)
@@ -152,8 +166,10 @@ def run_zeroday(cfg, k=None, tag="zeroday"):
 
 
 def _fit_predict(cfg, method, train, val, tests: dict, bank, seed, out_dir):
+    from .tuning import tuned
+    cfg, xgb_params = tuned(cfg, method)
     if method in BASELINES:
-        m = BASELINES[method](seed) if method == "XGBoost" else BASELINES[method]()
+        m = BASELINES[method](seed, xgb_params) if method == "XGBoost" else BASELINES[method]()
         m.fit(train, val, bank)
         pv = m.predict([s for s in val if s["delta"] == 0], bank)
         preds = {k: dict(p=m.predict(v, bank)) for k, v in tests.items()}
