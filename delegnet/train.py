@@ -237,7 +237,10 @@ def train_model(cfg, variant: str, train: list, val: list, bank: CodeBank, seed:
     model = copy.deepcopy(init) if init is not None else DelegNet(m, VARIANTS[variant])
     enc_path = Path(cfg["run_root"]) / "code_encoder.pt"
     if init is None and hasattr(model, "code_enc") and enc_path.exists() and "noPretrain" not in variant:
-        model.code_enc.load_state_dict(torch.load(enc_path, map_location="cpu"))
+        state = torch.load(enc_path, map_location="cpu")
+        if not all(torch.isfinite(v).all() for v in state.values()):
+            raise RuntimeError(f"{enc_path} contains non-finite weights; rerun `run.py pretrain`")
+        model.code_enc.load_state_dict(state)
     if hasattr(model, "code_enc"):
         for p in model.code_enc.parameters():
             p.requires_grad_(False)
@@ -375,8 +378,13 @@ def pretrain_code_encoder(cfg):
             n = len(batch)
             target = torch.cat([torch.arange(n, 2 * n), torch.arange(n)]).to(dev)
             loss = F.cross_entropy(sim, target)
+            if not torch.isfinite(loss):
+                raise RuntimeError(f"code pre-training diverged (loss {loss.item()}) at epoch {ep}")
             opt.zero_grad(); loss.backward(); opt.step()
             tot += loss.item()
         log.info("pretrain epoch %d loss %.4f", ep, tot)
     Path(cfg["run_root"]).mkdir(parents=True, exist_ok=True)
-    torch.save({k: v.cpu() for k, v in enc.state_dict().items()}, Path(cfg["run_root"]) / "code_encoder.pt")
+    state = {k: v.cpu() for k, v in enc.state_dict().items()}
+    if not all(torch.isfinite(v).all() for v in state.values()):
+        raise RuntimeError("code encoder has non-finite weights; refusing to save")
+    torch.save(state, Path(cfg["run_root"]) / "code_encoder.pt")

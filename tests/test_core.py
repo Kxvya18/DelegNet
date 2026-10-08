@@ -59,6 +59,17 @@ def test_canonicalization_undoes_mutation(chain):
     assert np.mean(sim) > 0.95 and np.mean(same_idioms) > 0.9
 
 
+def test_prototype_gradients_finite_at_zero_distance():
+    """The clustering loss pulls embeddings onto prototypes; gradients must stay finite there."""
+    from delegnet.patterns.prototypes import PrototypeLayer
+    layer = PrototypeLayer(8, per_class=2)
+    z = layer.protos.detach()[:3].clone().requires_grad_(True)   # exactly on three prototypes
+    logit, _, d2 = layer(z)
+    cl, sep, div = layer.losses(d2, torch.tensor([0.0, 0.0, 1.0]))
+    (logit.sum() + cl + sep + div).backward()
+    assert torch.isfinite(z.grad).all() and torch.isfinite(layer.protos.grad).all()
+
+
 def test_segment_softmax():
     s = torch.randn(7, 2)
     idx = torch.tensor([0, 0, 1, 1, 1, 2, 2])
