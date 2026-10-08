@@ -31,9 +31,9 @@ from .train import CodeBank, build_samples, predict, train_model
 
 log = logging.getLogger("exp")
 
-MAIN = ["HashBlocklist", "OpcodeKNN", "XGBoost", "GraphSAGE", "StaticGAT", "TGAT", "MLP+Code", "DelegNet"]
-ABLATIONS = ["DelegNet-noProto", "DelegNet-noMotif", "DelegNet-noCode", "DelegNet-idiomsOnly",
-             "DelegNet-noTime", "DelegNet-noRel", "DelegNet-noPretrain"]
+MAIN = ["HashBlocklist", "OpcodeKNN", "XGBoost", "GraphSAGE", "StaticGAT", "TGAT", "DelegNet"]
+ABLATIONS = ["DelegNet-noGate", "DelegNet-noCodeExpert", "DelegNet-noMemory", "DelegNet-noEvidenceDropout",
+             "DelegNet-noProto"]
 
 
 def _labelled(tg):
@@ -336,8 +336,12 @@ def run_analyses(cfg):
 
     def load(method, seed, protocol="temporal"):
         f = root / protocol / "models" / f"{method}_s{seed}"
-        return pickle.load(open(f.with_suffix(".pkl"), "rb")) if f.with_suffix(".pkl").exists() else \
-            torch.load(f.with_suffix(".pt"), weights_only=False)
+        if f.with_suffix(".pkl").exists():
+            return pickle.load(open(f.with_suffix(".pkl"), "rb"))
+        if f.with_suffix(".pt").exists():
+            return torch.load(f.with_suffix(".pt"), weights_only=False)
+        log.warning("no saved %s model for seed %d in %s; skipped", method, seed, protocol)
+        return None
 
     def scores(m, samples):
         return m.predict(samples, bank) if hasattr(m, "fit") else predict(m, samples, bank)["p"]
@@ -345,9 +349,11 @@ def run_analyses(cfg):
     # ---- 2. code-mutation robustness: attacker re-deploys mutated copies of malicious code
     rob = []
     mal_nodes = {int(s["nodes"][s["centres"][2]]) for s in test0 if s["y"] == 1}
-    for method in ["HashBlocklist", "OpcodeKNN", "XGBoost", "DelegNet", "DelegNet-noPretrain", "DelegNet-idiomsOnly"]:
+    for method in ["HashBlocklist", "OpcodeKNN", "XGBoost", "TGAT", "DelegNet"]:
         for seed in seeds:
             m = load(method, seed)
+            if m is None:
+                continue
             tau = met[(met.method == method) & (met.seed == seed) & (met.split == "test")].tau_fpr.iloc[0]
             for st in ex["mutation_strengths"]:
                 bank.override.clear()
@@ -362,9 +368,11 @@ def run_analyses(cfg):
     # ---- 3. structural evasion: attacker self-submits authorizations (no sponsor, no batching)
     ev = []
     test_masked = build_samples(cfg, src, te, [0], mask_sponsor=True)
-    for method in ["XGBoost", "TGAT", "DelegNet", "DelegNet-noMotif"]:
+    for method in ["XGBoost", "TGAT", "DelegNet"]:
         for seed in seeds:
             m = load(method, seed)
+            if m is None:
+                continue
             tau = met[(met.method == method) & (met.seed == seed) & (met.split == "test")].tau_fpr.iloc[0]
             for name, samples in (("original", test0), ("self-submitted", test_masked)):
                 p = scores(m, samples)
@@ -391,6 +399,8 @@ def run_analyses(cfg):
     for method in ["DelegNet", "TGAT", "XGBoost"]:
         for seed in seeds:
             m = load(method, seed)
+            if m is None:
+                continue
             emb = (lambda S: m.leaves(S, bank).astype(float)) if method == "XGBoost" \
                 else (lambda S: predict(m, S, bank)["z"])
             vS = [s for s in val0 if s["y"] == 1]
@@ -427,7 +437,7 @@ def run_analyses(cfg):
 
     # ---- 7. explanations: which relations drive alerts, and are explanations faithful?
     m = load("DelegNet", seeds[0])
-    pos = [s for s in test0 if s["y"] == 1][:200]
+    pos = [s for s in test0 if s["y"] == 1][:200] if m is not None else []
     mt, fid = [], []
     for i, s in enumerate(pos):
         mask, b = explain_edges(m, s, bank)

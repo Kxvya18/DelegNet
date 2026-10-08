@@ -132,8 +132,16 @@ def run_diagnostics(cfg: dict, shuffle_runs=(("XGBoost", 5), ("DelegNet", 3))):
             rng = np.random.default_rng(1000 + r)
             shuffled = []
             for S in (train, val):
-                perm = rng.permutation([s["y"] for s in S])
-                shuffled.append([{**s, "y": float(v)} for s, v in zip(S, perm)])
+                # balance the classes first: with ~95% scams and cloned scam code, a model fit to
+                # random labels still learns "typical = majority class", a density effect rather
+                # than leakage. On balanced data, permuted labels carry no information at all.
+                ys = np.array([s["y"] for s in S])
+                pos, neg = np.flatnonzero(ys == 1), np.flatnonzero(ys == 0)
+                k = min(len(pos), len(neg))
+                keep = np.concatenate([rng.choice(pos, k, replace=False), rng.choice(neg, k, replace=False)])
+                sub = [S[i] for i in keep]
+                perm = rng.permutation([s["y"] for s in sub])
+                shuffled.append([{**s, "y": float(v)} for s, v in zip(sub, perm)])
             preds, _ = _fit_predict(cfg, method, shuffled[0], shuffled[1], {"test": test}, bank, r, out)
             first = np.array([tg.set_index("auth_id").rank_in_contract.get(s["auth_id"], 0) == 1 for s in test])
             rows.append(dict(method=method, fold=fold, repeat=r, test_auroc_shuffled=_auc(y, preds["test"]["p"]),
