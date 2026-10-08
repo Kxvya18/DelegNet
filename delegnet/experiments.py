@@ -82,26 +82,33 @@ def zeroday_folds(tg, k, seed):
         rest = t[~t.family.isin(test_f)]
         rest_f = rest.groupby("family").label.agg(lambda s: int(s.mean() >= 0.5))
         val_f = set()
+        sizes = rest.groupby("family").size()
         for cls in (0, 1):
-            cand = [f for f in rng.permutation(rest_f[rest_f == cls].index.values)]
-            if len(cand) > 1:          # keep at least one family per class for training
-                val_f.add(cand[0])
+            cand = list(rng.permutation(rest_f[rest_f == cls].index.values))
+            target, got = 0.15 * sizes[cand].sum(), 0
+            # whole families until ~15% of this class, always leaving at least one for training
+            for f in cand[:-1]:
+                if got >= target:
+                    break
+                val_f.add(f)
+                got += sizes[f]
         val = rest[rest.family.isin(val_f)]
         if val.label.nunique() < 2:    # too few families: fall back to a random validation slice
             val = rest.sample(frac=0.15, random_state=seed)
         yield fold, rest.drop(val.index), val, t[t.family.isin(test_f)]
 
 
-def run_zeroday(cfg, k=None):
+def run_zeroday(cfg, k=None, tag="zeroday"):
     ex = cfg["experiment"]
     src = ex["source_chain"]
-    out_dir = Path(cfg["run_root"]) / "zeroday"
+    out_dir = Path(cfg["run_root"]) / tag
     out_dir.mkdir(parents=True, exist_ok=True)
     g, tg = load_graph(cfg, src)
     tg = tg.sort_values("event")
     tg["rank_in_contract"] = tg.groupby("contract_node").cumcount() + 1
     bank = CodeBank({src: g})
-    methods = ex.get("methods") or MAIN
+    methods = ex.get(f"methods_{tag}") or ex.get("methods") or MAIN
+    ex = {**ex, "seeds": ex.get(f"seeds_{tag}", ex["seeds"])}
     k = k or ex.get("zeroday_folds", 5)
     frames, rows = [], []
     for seed in ex["seeds"]:
@@ -171,7 +178,9 @@ def run_protocol(cfg, protocol: str, methods=None):
     out_dir.mkdir(parents=True, exist_ok=True)
     g, tg = load_graph(cfg, src)
     graphs = {src: g}
-    methods = methods or ex.get("methods") or (MAIN + ABLATIONS if protocol == "temporal" else MAIN)
+    methods = methods or ex.get(f"methods_{protocol}") or ex.get("methods") or \
+        (MAIN + ABLATIONS if protocol == "temporal" else MAIN)
+    ex = {**ex, "seeds": ex.get(f"seeds_{protocol}", ex["seeds"])}
     rows, frames = [], []
 
     for seed in ex["seeds"]:
@@ -287,7 +296,7 @@ def run_analyses(cfg):
     test0 = build_samples(cfg, src, te, [0])
     val0 = build_samples(cfg, src, va, [0])
     train0 = build_samples(cfg, src, tr, [0])
-    seeds = ex["seeds"][:3]
+    seeds = ex.get("seeds_temporal", ex["seeds"])[:3]
 
     def load(method, seed, protocol="temporal"):
         f = root / protocol / "models" / f"{method}_s{seed}"

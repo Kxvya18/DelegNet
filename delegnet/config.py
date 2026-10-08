@@ -22,6 +22,11 @@ def _expand(obj):
 def load_config(path: str | Path) -> dict:
     with open(path) as f:
         cfg = _expand(yaml.safe_load(f))
+    # machine-specific data locations without editing the shared config
+    if os.environ.get("DELEGNET_DATA_ROOT"):
+        cfg["data_root"] = os.environ["DELEGNET_DATA_ROOT"]
+    if os.environ.get("DELEGNET_SCAN_ROOT"):
+        cfg["collect"]["scan_root"] = os.environ["DELEGNET_SCAN_ROOT"]
     for c in cfg["chains"].values():
         for key in ("start_time", "end_time"):
             if key in c:

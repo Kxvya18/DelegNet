@@ -145,10 +145,11 @@ class DelegNet(nn.Module):
             self.motif = nn.Sequential(nn.Linear(len(MOTIF_NAMES), d), nn.GELU(), nn.Linear(d, d))
         head_in = 3 * d + len(AUTH_FEATS) + (d if flags.code != "none" else 0) + (d if flags.use_motifs else 0)
         self.readout = nn.Sequential(nn.Linear(head_in, d), nn.GELU(), nn.Dropout(m["dropout"]), nn.Linear(d, d))
+        # prediction always comes from a standard head; the prototype layer runs alongside it
+        # as the explanation / novelty module (it is trained jointly but does not gate accuracy)
+        self.out = nn.Sequential(nn.GELU(), nn.Linear(d, 1))
         if flags.use_proto:
             self.proto = PrototypeLayer(d, m["prototypes_per_class"])
-        else:
-            self.out = nn.Sequential(nn.GELU(), nn.Linear(d, 1))
 
     def encode_code(self, tokens, idioms):
         parts = [self.idiom(idioms)]
@@ -185,7 +186,8 @@ class DelegNet(nn.Module):
         if self.flags.use_motifs:
             parts.append(self.motif(b["motifs"]))
         z = self.readout(torch.cat(parts, 1))
+        out = dict(logit=self.out(z).squeeze(1), z=z)
         if self.flags.use_proto:
-            logit, sim, d2 = self.proto(z)
-            return dict(logit=logit, z=z, sim=sim, d2=d2)
-        return dict(logit=self.out(z).squeeze(1), z=z)
+            plogit, sim, d2 = self.proto(z)
+            out.update(proto_logit=plogit, sim=sim, d2=d2)
+        return out

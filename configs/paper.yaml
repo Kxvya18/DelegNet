@@ -2,7 +2,7 @@
 # Endpoints are routed per JSON-RPC method; put a paid archive endpoint first when you have one,
 # e.g. export ETH_RPC=https://eth-mainnet.g.alchemy.com/v2/<key>  and reference it as ${ETH_RPC}.
 
-data_root: data/full       # sampled working set; the raw full scan lives in collect.scan_root
+data_root: data/full        # keep data outside cloud-synced folders; override with DELEGNET_DATA_ROOT
 run_root: runs
 
 collect:
@@ -11,7 +11,7 @@ collect:
   activity_block_chunk: 5000
   activity_addr_chunk: 25
   hop2_limit: 2000           # candidate sinks / sponsor funders to expand
-  scan_root: data            # full type-4 scan (all authorizations)
+  scan_root: data            # full type-4 scan (all authorizations); override with DELEGNET_SCAN_ROOT
   per_contract_cap: 1000     # stratified sample for activity collection
 
 chains:
@@ -78,7 +78,7 @@ graph:
 
 experiment:
   source_chain: ethereum
-  target_chains: [base, bsc]
+  target_chains: []              # needs per-address explorer data for Base/BSC (free trace_filter is unusable there)
   checkpoints_s: [0, 12, 60, 300, 1800, 7200]
   train_checkpoints_s: [0, 60, 300]
   split: [0.6, 0.2, 0.2]          # temporal train/val/test
@@ -86,7 +86,17 @@ experiment:
   target_fpr: 0.01
   few_shot_k: [10, 50]
   seeds: [0, 1, 2]                # 3 seeds keeps the full run within a day on one Mac GPU
-  zeroday_folds: 5
+  zeroday_folds: 3
+  # zero-day is the headline result: main methods with 3 seeds; ablations with 1 seed
+  methods_zeroday: [HashBlocklist, OpcodeKNN, XGBoost, GraphSAGE, TGAT, DelegNet]
+  seeds_zeroday_ablation: [0]
+  methods_zeroday_ablation: [DelegNet-noMotif, DelegNet-noCode, DelegNet-noProto, DelegNet-noTime]
+  seeds_temporal: [0]
+  methods_temporal: [HashBlocklist, OpcodeKNN, XGBoost, GraphSAGE, TGAT, DelegNet]
+  seeds_family: [0]
+  methods_family: [HashBlocklist, OpcodeKNN, XGBoost, TGAT, DelegNet]
+  seeds_crosschain: [0]
+  methods_crosschain: [HashBlocklist, OpcodeKNN, XGBoost, TGAT, DelegNet]
   mutation_strengths: [0, 0.5, 1, 2, 4]
 
 model:
@@ -99,9 +109,10 @@ model:
   prototypes_per_class: 10
   lr: 0.001
   weight_decay: 0.0001
-  epochs: 30
-  patience: 6
-  batch_size: 64
+  epochs: 12
+  patience: 3
+  batch_size: 32
+  epoch_samples: 10000        # contract-balanced draws per epoch
   lambda_cluster: 0.05
   lambda_sep: 0.01
   lambda_div: 0.01

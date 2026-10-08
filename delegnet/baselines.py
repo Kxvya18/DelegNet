@@ -56,21 +56,26 @@ class OpcodeKNN:
         self.ref = [(g, np.mean(ys)) for g, ys in ref.values()]
         return self
 
-    def predict(self, samples, bank):
+    def similarities(self, samples, bank) -> np.ndarray:
+        """[best similarity to a known-malicious contract, to a known-benign one] per sample."""
         cache, out = {}, []
         for s in samples:
             k, got = _code_key(bank, s)
             if got is None:
-                out.append(0.5)
+                out.append((0.0, 0.0))
                 continue
             key = (k, got[0].tobytes())
             if key not in cache:
                 g = self.grams(got[0].tolist())
                 best_m = max((len(g & r) / max(len(g | r), 1) for r, y in self.ref if y >= 0.5), default=0)
                 best_b = max((len(g & r) / max(len(g | r), 1) for r, y in self.ref if y < 0.5), default=0)
-                cache[key] = 0.5 + 0.5 * (best_m - best_b)
+                cache[key] = (best_m, best_b)
             out.append(cache[key])
-        return np.array(out)
+        return np.array(out, dtype=np.float32)
+
+    def predict(self, samples, bank):
+        sim = self.similarities(samples, bank)
+        return 0.5 + 0.5 * (sim[:, 0] - sim[:, 1])
 
 
 def tabular(samples, bank) -> np.ndarray:

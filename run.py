@@ -82,7 +82,11 @@ async def collect(cfg, chain: str, steps: list[str]):
             await C.activity(rpc, out, tracked, rng["start"], rng["end"], "hop1",
                              kc["activity_block_chunk"], kc["activity_addr_chunk"], cc.get("token_logs", False))
             tr = C._read_dir(out / "transfers_hop1", C.TRANSFER_COLUMNS)
-            await C.senders(rpc, out, list(tr.tx_hash.unique()))
+            # only outflows from authorities need their tx sender (self vs third-party trigger)
+            await C.senders(rpc, out, list(tr[tr.src.isin(set(auth.authority))].tx_hash.unique()))
+        if "senders" in steps:   # sender lookups only (activity already collected)
+            tr = C._read_dir(out / "transfers_hop1", C.TRANSFER_COLUMNS)
+            await C.senders(rpc, out, list(tr[tr.src.isin(set(auth.authority))].tx_hash.unique()))
         if "hop2" in steps:
             tr = C._read_dir(out / "transfers_hop1", C.TRANSFER_COLUMNS)
             snd = pd.read_parquet(out / "senders.parquet")
@@ -91,7 +95,7 @@ async def collect(cfg, chain: str, steps: list[str]):
             await C.activity(rpc, out, extra, rng["start"], rng["end"], "hop2",
                              kc["activity_block_chunk"], kc["activity_addr_chunk"], cc.get("token_logs", False))
             tr2 = C._read_dir(out / "transfers_hop2", C.TRANSFER_COLUMNS)
-            await C.senders(rpc, out, list(tr2.tx_hash.unique()))
+            await C.senders(rpc, out, list(tr2[tr2.src.isin(set(auth.authority))].tx_hash.unique()))
 
 
 def main():
@@ -121,8 +125,8 @@ def main():
         pretrain_code_encoder(cfg)
     elif args.stage == "experiment":
         from delegnet.experiments import run_protocol, run_zeroday
-        if args.protocol == "zeroday":
-            run_zeroday(cfg)
+        if args.protocol.startswith("zeroday"):
+            run_zeroday(cfg, tag=args.protocol)
         else:
             run_protocol(cfg, args.protocol)
     elif args.stage == "analyse":
