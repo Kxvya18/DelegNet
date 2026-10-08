@@ -34,13 +34,22 @@ watched() {   # watched <logfile> <run.py args...>
 }
 
 if [ $# -eq 0 ]; then
+  # full run: results are regenerated from scratch; the code encoder and tuning are reused if present
   set -- zeroday zeroday_ablation temporal family crosschain
-  mark "pretrain"; watched logs/pretrain.log pretrain || { mark "FAILED pretrain"; exit 1; }
+  RUNS=$(.venv/bin/python -c "from delegnet.config import load_config; print(load_config('$CFG')['run_root'])")
+  rm -rf "$RUNS"/{zeroday,zeroday_ablation,temporal,family,crosschain,diagnostics,report}
+  if [ ! -f "$RUNS/code_encoder.pt" ]; then
+    mark "pretrain"; watched logs/pretrain.log pretrain || { mark "FAILED pretrain"; exit 1; }
+  fi
+  if [ ! -f "$RUNS/tuning/best.json" ]; then
+    mark "tune"; watched logs/tune.log tune || { mark "FAILED tune"; exit 1; }
+  fi
 fi
 for proto in "$@"; do
   mark "experiment $proto"
   watched "logs/experiment_$proto.log" experiment --protocol "$proto" || mark "FAILED $proto"
 done
+mark "diagnose"; watched logs/diagnose.log diagnose || mark "FAILED diagnose"
 mark "analyses"; watched logs/analyse.log analyse || mark "FAILED analyses"
 mark "report";   watched logs/report.log report  || mark "FAILED report"
 mark "EXPERIMENTS_DONE"

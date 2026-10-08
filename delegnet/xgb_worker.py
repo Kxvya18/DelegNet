@@ -3,12 +3,15 @@ torch links against, which segfaults when both live in the same process."""
 import numpy as np
 
 
-def fit(X, y, Xv, yv, seed):
+DEFAULTS = dict(learning_rate=0.03, max_depth=6, subsample=0.8, colsample_bytree=0.8, min_child_weight=1)
+
+
+def fit(X, y, Xv, yv, seed, params=None):
     import xgboost as xgb
-    m = xgb.XGBClassifier(n_estimators=2000, learning_rate=0.03, max_depth=6, subsample=0.8,
-                          colsample_bytree=0.8, eval_metric="aucpr", early_stopping_rounds=100,
+    hp = {**DEFAULTS, **(params or {})}
+    m = xgb.XGBClassifier(n_estimators=2000, eval_metric="aucpr", early_stopping_rounds=100,
                           scale_pos_weight=max((y == 0).sum(), 1) / max((y == 1).sum(), 1),
-                          random_state=seed, n_jobs=8, tree_method="hist")
+                          random_state=seed, n_jobs=8, tree_method="hist", **hp)
     m.fit(X, y, eval_set=[(Xv, yv)], verbose=False)
     return bytes(m.get_booster().save_raw("ubj"))
 
@@ -23,9 +26,14 @@ def predict(raw, X, leaves=False):
 
 def call(fn, *args):
     import multiprocessing as mp
+    import os
     from concurrent.futures import ProcessPoolExecutor
-    with ProcessPoolExecutor(1, mp_context=mp.get_context("spawn")) as ex:
-        return ex.submit(fn, *args).result()
+    os.environ["DELEGNET_NO_TORCH"] = "1"          # inherited by the spawned worker only
+    try:
+        with ProcessPoolExecutor(1, mp_context=mp.get_context("spawn")) as ex:
+            return ex.submit(fn, *args).result()
+    finally:
+        os.environ.pop("DELEGNET_NO_TORCH", None)
 
 
 __all__ = ["fit", "predict", "call", "np"]
