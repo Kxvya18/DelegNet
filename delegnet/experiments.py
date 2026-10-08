@@ -110,37 +110,45 @@ def run_zeroday(cfg, k=None, tag="zeroday"):
     methods = ex.get(f"methods_{tag}") or ex.get("methods") or MAIN
     ex = {**ex, "seeds": ex.get(f"seeds_{tag}", ex["seeds"])}
     k = k or ex.get("zeroday_folds", 5)
-    frames, rows = [], []
+    parts = out_dir / "parts"
+    parts.mkdir(exist_ok=True)
+    frames = []
     for seed in ex["seeds"]:
         for fold, tr, va, te in zeroday_folds(tg, k, seed):
             if te.label.nunique() < 2 and not len(te):
+                continue
+            todo = [m for m in methods if not (parts / f"{m}_s{seed}_f{fold}.parquet").exists()]
+            frames += [pd.read_parquet(parts / f"{m}_s{seed}_f{fold}.parquet") for m in methods if m not in todo]
+            if not todo:   # finished in an earlier (interrupted) run
                 continue
             train = build_samples(cfg, src, tr, ex["train_checkpoints_s"])
             val = build_samples(cfg, src, va, ex["train_checkpoints_s"])
             test = build_samples(cfg, src, te, [0])
             log.info("zeroday seed %d fold %d | train %d val %d test %d (%d families held out)",
                      seed, fold, len(tr), len(va), len(te), te.family.nunique())
-            for method in methods:
+            for method in todo:
                 preds, taus = _fit_predict(cfg, method, train, val, {"test": test}, bank, seed, out_dir)
                 df = _frame(test, preds["test"], method, seed, f"fold{fold}")
                 df["tau_fpr"], df["tau_f1"] = taus["tau_fpr"], taus["tau_f1"]
+                df.to_parquet(parts / f"{method}_s{seed}_f{fold}.parquet", index=False)  # checkpoint
                 frames.append(df)
-        pr = pd.concat(frames)
-        pr = pr.merge(tg[["auth_id", "rank_in_contract", "family"]], on="auth_id", how="left")
-        pr.to_parquet(out_dir / "predictions.parquet", index=False)
-        # pooled over folds (each delegation is scored exactly once per seed, by a model that never saw its family)
-        for (method, sd), grp in pr[pr.seed == seed].groupby(["method", "seed"]):
-            for name, sub in (("all", grp), ("first10_per_contract", grp[grp.rank_in_contract <= 10])):
-                if sub.y.nunique() == 2:
-                    m = metrics(sub.y, sub.p, 0.5, 0.5)
-                    hit = (sub.p >= sub.tau_fpr)
-                    m["recall_at_fpr"] = float(hit[sub.y == 1].mean())
-                    m["fpr"] = float(hit[sub.y == 0].mean())
-                    hf = (sub.p >= sub.tau_f1)
-                    from sklearn.metrics import f1_score, matthews_corrcoef
-                    m["f1"], m["mcc"] = f1_score(sub.y, hf), matthews_corrcoef(sub.y, hf)
-                    rows.append(dict(method=method, seed=sd, split=name, **m))
-        pd.DataFrame(rows).to_csv(out_dir / "metrics.csv", index=False)
+    pr = pd.concat(frames)
+    pr = pr.merge(tg[["auth_id", "rank_in_contract", "family"]], on="auth_id", how="left")
+    pr.to_parquet(out_dir / "predictions.parquet", index=False)
+    # pooled over folds: each delegation is scored once per seed, by a model that never saw its family
+    from sklearn.metrics import f1_score, matthews_corrcoef
+    rows = []
+    for (method, sd), grp in pr.groupby(["method", "seed"]):
+        for name, sub in (("all", grp), ("first10_per_contract", grp[grp.rank_in_contract <= 10])):
+            if sub.y.nunique() == 2:
+                m = metrics(sub.y, sub.p, 0.5, 0.5)
+                hit = (sub.p >= sub.tau_fpr)
+                m["recall_at_fpr"] = float(hit[sub.y == 1].mean())
+                m["fpr"] = float(hit[sub.y == 0].mean())
+                hf = (sub.p >= sub.tau_f1)
+                m["f1"], m["mcc"] = f1_score(sub.y, hf), matthews_corrcoef(sub.y, hf)
+                rows.append(dict(method=method, seed=sd, split=name, **m))
+    pd.DataFrame(rows).to_csv(out_dir / "metrics.csv", index=False)
 
 
 def _fit_predict(cfg, method, train, val, tests: dict, bank, seed, out_dir):
@@ -205,13 +213,25 @@ def run_protocol(cfg, protocol: str, methods=None):
         tests = {k: build_samples(cfg, ch, t, d) for k, (ch, t, d) in test_sets.items()}
         log.info("seed %d | train %d val %d | %s", seed, len(tr), len(va), {k: len(v[1]) for k, v in test_sets.items()})
 
+        parts = out_dir / "parts"
+        parts.mkdir(exist_ok=True)
         for method in methods:
+            part = parts / f"{method}_s{seed}"
+            if part.with_suffix(".parquet").exists():   # finished in an earlier (interrupted) run
+                frames.append(pd.read_parquet(part.with_suffix(".parquet")))
+                rows += json.loads(part.with_suffix(".json").read_text())
+                continue
             preds, taus = _fit_predict(cfg, method, train, val, tests, bank, seed, out_dir)
+            new_frames, new_rows = [], []
             for split, samples in tests.items():
                 df = _frame(samples, preds[split], method, seed, split)
-                frames.append(df)
+                new_frames.append(df)
                 d0 = df[df.delta == 0]
-                rows.append(dict(method=method, seed=seed, split=split, **taus, **metrics(d0.y, d0.p, **taus)))
+                new_rows.append(dict(method=method, seed=seed, split=split, **taus, **metrics(d0.y, d0.p, **taus)))
+            pd.concat(new_frames).to_parquet(part.with_suffix(".parquet"), index=False)   # checkpoint
+            part.with_suffix(".json").write_text(json.dumps(new_rows, default=float))
+            frames += new_frames
+            rows += new_rows
             log.info("%s seed %d: %s", method, seed, {r["split"]: round(r.get("auprc", np.nan), 4)
                                                      for r in rows[-len(tests):]})
             if protocol == "crosschain" and method in ("DelegNet", "XGBoost"):
