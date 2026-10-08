@@ -23,8 +23,14 @@ class PrototypeLayer(nn.Module):
         self.last = nn.Parameter(w)                   # ProtoPNet-style class connections
         self.register_buffer("source", torch.full((per_class * n_classes,), -1, dtype=torch.long))
 
+    def squared_distances(self, z: torch.Tensor) -> torch.Tensor:
+        """||z - p||^2 without a square root. `cdist(...).pow(2)` has an infinite gradient at
+        distance 0, which the clustering loss actively drives towards, turning weights into NaN."""
+        return (z.pow(2).sum(1, keepdim=True) + self.protos.pow(2).sum(1)[None, :]
+                - 2 * z @ self.protos.t()).clamp_min(0)
+
     def forward(self, z: torch.Tensor):
-        d2 = torch.cdist(z, self.protos).pow(2)       # [B, P]
+        d2 = self.squared_distances(z)                # [B, P]
         sim = torch.log((d2 + 1) / (d2 + 1e-4))
         logits = sim @ self.last.t()                  # [B, C]
         return logits[:, 1] - logits[:, 0], sim, d2
