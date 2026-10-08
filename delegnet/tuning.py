@@ -23,7 +23,7 @@ log = logging.getLogger("tuning")
 NEURAL = {"lr": [1e-3, 5e-4, 2e-4], "dim": [64, 128], "dropout": [0.1, 0.3], "layers": [1, 2],
           "weight_decay": [1e-4, 1e-3]}
 SPACE = {
-    "DelegNet": {**NEURAL, "flag:attention": [True, False]},   # backbone: attention vs mean aggregation
+    "DelegNet": NEURAL,
     "TGAT": NEURAL,
     "GraphSAGE": NEURAL,
     "XGBoost": {"max_depth": [3, 4, 6, 8], "learning_rate": [0.03, 0.1], "min_child_weight": [1, 5],

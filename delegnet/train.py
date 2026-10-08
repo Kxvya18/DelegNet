@@ -308,7 +308,7 @@ def train_model(cfg, variant: str, train: list, val: list, bank: CodeBank, seed:
     flags = dataclasses.replace(VARIANTS[variant], **m.get("flag_overrides", {}).get(variant, {}))
     model = copy.deepcopy(init) if init is not None else DelegNet(m, flags)
     enc_path = Path(cfg["run_root"]) / "code_encoder.pt"
-    if init is None and hasattr(model, "code_enc") and enc_path.exists() and "noPretrain" not in variant:
+    if init is None and hasattr(model, "code_enc") and enc_path.exists():
         state = torch.load(enc_path, map_location="cpu")
         if not all(torch.isfinite(v).all() for v in state.values()):
             raise RuntimeError(f"{enc_path} contains non-finite weights; rerun `run.py pretrain`")

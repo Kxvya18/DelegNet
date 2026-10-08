@@ -90,8 +90,8 @@ experiment:
   # zero-day is the headline result: main methods with 3 seeds; ablations with 1 seed
   methods_zeroday: [HashBlocklist, OpcodeKNN, XGBoost, GraphSAGE, TGAT, DelegNet]
   seeds_zeroday_ablation: [0]
-  methods_zeroday_ablation: [DelegNet-noEvidenceDropout, DelegNet-noMemory, DelegNet-noProto, DelegNet-noMotif,
-                             DelegNet-noCode, DelegNet-noTime]
+  methods_zeroday_ablation: [DelegNet-noGate, DelegNet-noCodeExpert, DelegNet-noMemory, DelegNet-noEvidenceDropout,
+                             DelegNet-noProto]
   seeds_temporal: [0]
   methods_temporal: [HashBlocklist, OpcodeKNN, XGBoost, GraphSAGE, TGAT, DelegNet]
   seeds_family: [0]
