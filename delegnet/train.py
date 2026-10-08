@@ -68,6 +68,56 @@ class CodeBank:
         self.augment = False
         self.encoder = None     # frozen pre-trained code encoder (kept on the CPU)
         self.emb = {}           # token-sequence bytes -> embedding
+        self.memory = []        # code-pattern memory: (family, 4-gram set, label) of training contracts
+        self.sims = {}
+        self._families = {}
+
+    # ---------------------------------------------------------------- code-pattern retrieval memory
+    def family(self, chain, node):
+        if chain not in self._families:
+            from .graph import code_families
+            g = self.graphs[chain]
+            nodes = np.array(sorted(g.code_tokens))
+            self._families[chain] = dict(zip(nodes.tolist(), code_families(g, nodes).tolist())) if len(nodes) else {}
+        return self._families[chain].get(node, -1)
+
+    @staticmethod
+    def _grams(tok):
+        tok = tok.tolist()
+        return frozenset(zip(tok, tok[1:], tok[2:], tok[3:]))
+
+    def build_memory(self, samples):
+        """Remember the canonical code patterns of the training contracts with their labels."""
+        per = {}
+        for s in samples:
+            key = (s["chain"], int(s["nodes"][s["centres"][2]]))
+            per.setdefault(key, []).append(s["y"])
+        self.memory, self.sims = [], {}
+        for (chain, node), ys in per.items():
+            g = self.graphs[chain]
+            if node in g.code_tokens:
+                self.memory.append((self.family(chain, node), self._grams(g.code_tokens[node]), float(np.mean(ys))))
+
+    def pattern_sims(self, chain, node) -> tuple[float, float]:
+        """Best similarity to a remembered scam / benign pattern, skipping the contract's own code
+        family, so training rows see what an unseen (zero-day) contract sees at test time."""
+        if not self.memory:
+            return 0.0, 0.0
+        got = self.get(chain, node)
+        if got is None:
+            return 0.0, 0.0
+        key = (chain, node, got[0].tobytes())
+        if key not in self.sims:
+            fam, g = self.family(chain, node), self._grams(got[0])
+            best = [0.0, 0.0]
+            for f, ref, y in self.memory:
+                if f == fam:
+                    continue
+                j = len(g & ref) / max(len(g | ref), 1)
+                c = 0 if y >= 0.5 else 1
+                best[c] = max(best[c], j)
+            self.sims[key] = tuple(best)
+        return self.sims[key]
 
     def set_encoder(self, encoder):
         """Use a frozen code encoder whose embeddings are computed once per distinct code on the
@@ -163,6 +213,9 @@ def collate(samples: list[dict], bank: CodeBank, device="cpu") -> dict:
     extra = {}
     if bank.encoder is not None and codes:
         extra["code_emb"] = bank.embeddings([c[0] for c in codes]).to(device)
+    extra["pattern_sims"] = torch.as_tensor(
+        [bank.pattern_sims(s["chain"], int(s["nodes"][s["centres"][2]])) for s in samples],
+        dtype=torch.float32, device=device)
     return dict(**extra,
         x=T(xs), role=T(roles, torch.long), is_contract=T(kinds, torch.long), code_slot=T(slots, torch.long),
         code_tokens=torch.as_tensor(tok, device=device),
@@ -247,6 +300,8 @@ def train_model(cfg, variant: str, train: list, val: list, bank: CodeBank, seed:
         for p in model.code_enc.parameters():
             p.requires_grad_(False)
         bank.set_encoder(model.code_enc)
+    if model.flags.memory and init is None:
+        bank.build_memory(train)
     model.to(dev)
     opt = torch.optim.AdamW(model.parameters(), lr=lr or m["lr"], weight_decay=m["weight_decay"])
     val0 = [s for s in val if s["delta"] == 0] or val
