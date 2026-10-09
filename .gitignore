@@ -14,3 +14,8 @@ logs/
 # third-party label sources are fetched by scripts/fetch_labels.sh, not redistributed here
 labels/*
 !labels/README.md
+
+# paper previews (generated)
+paper/figures/*.png
+paper/figures_preview*.png
+paper/tables/presignature_scores.csv

@@ -1,0 +1,7 @@
+model,observed,null_mean,null_q975,p_value
+DelegNet,0.9926,0.5007,0.556,0.001
+TGAT,0.9999,0.5003,0.5582,0.001
+GraphSAGE,0.9991,0.5014,0.5565,0.001
+XGBoost,0.8937,0.5001,0.5453,0.001
+Fuzzy hash,1.0,0.5004,0.5539,0.001
+Blocklist,0.5,0.5,0.5,1.0

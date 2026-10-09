@@ -1,0 +1,73 @@
+\section{Experimental Methodology}
+\label{sec:setup}
+
+\subsection{Baselines}
+We compare \dn{} with five detectors that represent current practice and the strongest learned alternatives. All learned baselines receive strictly more information than \dn{}: the complete behavioural context of each delegation, in addition to code features.
+
+\paragraph{Blocklist} An exact-match list: a contract is flagged if its canonical code was labelled malicious in training, cleared if it was labelled benign, and scored $0.5$ otherwise. This mirrors wallet and explorer warnings, and is in fact stronger than address- or raw-hash-based lists, because canonical matching already absorbs re-deployment with new constants.
+
+\paragraph{Fuzzy hash} The prior-art code-similarity approach: nearest-neighbour Jaccard similarity of four-grams of the \emph{raw} opcode sequence, with the same signed-margin score as \dn{}. It isolates the contribution of canonicalisation, since memory, scoring and family exclusion are identical.
+
+\paragraph{XGBoost} Gradient-boosted trees~\cite{chen2016xgboost} on $101$ features: $18$ running statistics for each of the authority, sponsor and contract; $21$ behavioural motif statistics; $5$ authorization features; and the $21$ code idioms of Section~\ref{sec:method}. The behavioural motifs, inspired by temporal network motifs~\cite{paranjape2017motifs}, cover campaign infrastructure (batch size, gas funding of the authority by the sponsor, sponsor breadth and age, funding of the sponsor by a known sink), sibling evidence over up to $256$ earlier delegators of the same contract (fractions drained within 24\,h or 60\,s, swept, still self-active or departed, maximal shared sink, sponsor diversity, sink fan-out) and the authority's own history. All motifs are counted exactly at the decision cutoff using chain-order event identifiers, so that a same-block drain is never visible when deciding at the authorization itself.
+
+\paragraph{GraphSAGE and TGAT} Two temporal graph neural networks over a heterogeneous event graph whose nodes are accounts and contracts and whose events are authorizations, sponsorships, revocations and value transfers. Event features are the normalised value (log-ratio to the asset's median in the first 20\% of the window), token and internal-call flags, a flag for outflows triggered by a third party, the log batch size and self-sponsorship. Node features are $18$ statistics read at the cutoff from per-node cumulative arrays in logarithmic time. For each delegation we sample the $24$ most recent events of the authority, sponsor and contract and the $8$ most recent events of each neighbour, up to $256$ nodes, all with chain-order identifiers not exceeding the cutoff. TGAT~\cite{xu2020tgat} applies two layers of multi-head attention over messages carrying the source state, the event features and a learnable functional time encoding $\phi(\Delta t)=\cos(\omega\Delta t+\beta)$ with frequencies spanning seconds to months:
+\begin{equation}
+\alpha_{vw}=\operatorname{softmax}_{w\in\mathcal{N}(v)}\frac{(W_q h_v)^{\top}W_k\,[h_w\,\|\,\phi(\Delta t_{vw})\,\|\,x_{vw}]}{\sqrt{d}} .
+\end{equation}
+GraphSAGE~\cite{hamilton2017graphsage} replaces attention by mean aggregation and omits the time encoding. Both read out the states of the authority, sponsor and contract together with the authorization features. Both are trained with class-weighted cross-entropy and contract-balanced sampling---each (contract, class) group receives equal weight in each epoch of $6{,}000$ draws, so that mega-campaigns do not dominate---and are selected by class-balanced validation log-loss, because validation AUPRC saturates at $1.0$ within a few epochs on this task.
+
+\subsection{Equal-budget tuning}
+Every method with hyperparameters receives the same budget: six random configurations, each trained on the training families of all three zero-day folds and scored on those folds' \emph{validation} families by mean AUROC (ties broken by validation log-loss). Test families are never used. Table~\ref{tab:tuning} lists the search spaces and selected configurations. \dn{} has no learned parameters; its only choices, the four-gram order and the 1\% false-positive operating point, were fixed before evaluation.
+
+\begin{table}[t]
+\centering
+\caption{Equal-budget tuning on validation families (6 trials each).}
+\label{tab:tuning}
+\footnotesize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{lp{0.43\columnwidth}p{0.27\columnwidth}}
+\toprule
+Method & Search space & Selected \\
+\midrule
+TGAT & lr $\{10^{-3},5{\cdot}10^{-4},2{\cdot}10^{-4}\}$, width $\{64,128\}$, dropout $\{0.1,0.3\}$, layers $\{1,2\}$, weight decay $\{10^{-4},10^{-3}\}$ & $2{\cdot}10^{-4}$, 128, 0.1, 2, $10^{-3}$ \\
+GraphSAGE & as TGAT & $5{\cdot}10^{-4}$, 64, 0.1, 2, $10^{-3}$ \\
+XGBoost & depth $\{3,4,6,8\}$, learning rate $\{0.03,0.1\}$, min.\ child weight $\{1,5\}$, subsample $\{0.7,1.0\}$, column sample $\{0.6,0.9\}$ & 8, 0.03, 1, 1.0, 0.6 \\
+\dn{} & none (non-parametric) & -- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Zero-day protocol}
+Labelled code families are dealt, separately for each class, into three folds by a seeded permutation. In each fold, the families of that fold form the test set. From the remaining families, whole families covering approximately 15\% of each class form the validation set, and the rest form the training set. No contract, and no clone of a contract, appears in more than one of the three sets. Each delegation is scored exactly once per seed, by a model that has never seen its family; scores are pooled over folds and the protocol is repeated with three seeds. Seed ensembles average each delegation's three scores. The design simulates the arrival of a new attack family against a detector trained on all earlier ones.
+
+\paragraph{Evidence-history slices} Detection difficulty depends on whether earlier victims of the same contract are visible at decision time. We therefore report results for all delegations, for the first ten victims of each contract, and for the first victim alone, together with finer buckets (1st, 2--10, 11--100, $>$100). On the first victim, no detector can use sibling evidence; this is the purest test of generalisation to a new family.
+
+\subsection{Adaptive-adversary suite}
+For every malicious test delegation, and identically for every detector, we apply five attacks that change only attacker-controlled inputs. Benign delegations are left unchanged, because the attacker cannot alter them.
+\begin{itemize}
+\item \emph{Self-submit}: the authorization is submitted from the victim's own account, removing the sponsor, the batch and the sponsorship event. The delegation is re-sampled from the graph with the sponsor masked.
+\item \emph{Fresh sponsor}: a new sponsor account per victim, removing the sponsor's history and funding trail.
+\item \emph{Fresh contract}: a newly deployed contract per victim, removing sibling evidence and the contract's delegation counters.
+\item \emph{Code disguise}: each malicious contract is replaced by a mutant of strength $\sigma=2$ produced by the verified mutator of Section~\ref{sec:canon}.
+\item \emph{Combined}: self-submission, a fresh contract and code disguise together.
+\end{itemize}
+Thresholds remain those chosen on clean validation data, as a deployed defender would not know an attack is under way. A separate experiment sweeps the disguise strength $\sigma\in\{0,0.5,1,2,4\}$.
+
+\subsection{Pre-signature and monitoring settings}
+For pre-signature screening, each delegation is scored at the event immediately preceding its authorization, with the sponsor masked, since a wallet receiving a signature request knows the signer and the delegate but not who will submit. For monitoring, delegations are scored at checkpoints $\delta\in\{0,12,60,300,1800,7200\}$\,s after inclusion. An alert fires at the first checkpoint whose score crosses the threshold, and we record whether it precedes the first theft and the share of stolen value that leaves the account after the alert.
+
+\subsection{Metrics and statistical analysis}
+We report AUROC and AUPRC (threshold-free), F1 and Matthews correlation at the validation-optimal F1 threshold, and recall and false-alarm rate at the validation 1\% false-positive threshold. Because AUPRC is strongly influenced by the prevalence of malicious delegations, which ranges from $78\%$ to $98\%$ across slices, AUROC and fixed-false-positive recall are our primary metrics. Uncertainty is reported as the standard deviation over seeds, and at contract level as 95\% bootstrap intervals over $2{,}000$ resamples of contracts. Paired differences between \dn{} and each baseline on identical delegations are assessed by paired bootstrap ($1{,}000$ resamples per seed).
+
+\subsection{Validity controls}
+We guard against the main threats to the validity of learned-detector evaluations.
+\begin{itemize}
+\item \emph{Temporal leakage}: every input is restricted to events with identifier at most the cutoff.
+\item \emph{Clone leakage}: families, not contracts, are the unit of splitting, and each (authority, contract) pair is a single target.
+\item \emph{Label leakage}: labels use post-delegation outcomes only.
+\item \emph{Tuning leakage}: validation families only, equal budget.
+\item \emph{Spurious separability}: a label-permutation test (1{,}000 permutations of test labels per method) establishes that observed scores are far from chance. A class-balanced shuffled-label retraining checks that no pipeline path conveys label information when training labels carry none; balancing removes the majority-class density effect that otherwise lets a model fit to random labels rank a 95\%-malicious test set non-randomly.
+\end{itemize}
+
+\subsection{Implementation}
+All components are implemented in Python with PyTorch for the graph models and XGBoost for gradient boosting, and run on a single Apple M2 laptop CPU. A full run---tuning, three-seed zero-day evaluation, the adaptive-adversary suite, pre-signature and monitoring analyses, and diagnostics---takes approximately five hours. Graph models were trained on the CPU after the GPU backend repeatedly hung under the operating system's GPU watchdog during long runs. The pipeline checkpoints each (method, seed, fold) result and restarts stalled stages automatically.
