@@ -284,6 +284,9 @@ def predict(model, samples, bank, bs=64, device="cpu") -> dict:
     res = dict(p=torch.cat(p).numpy(), z=torch.cat(z).numpy())
     if d2:
         res["d2"] = torch.cat(d2).numpy()
+    elif hasattr(model, "post_protos"):
+        P = model.post_protos.cpu().numpy()
+        res["d2"] = ((res["z"][:, None, :] - P[None]) ** 2).sum(-1)
     return res
 
 
@@ -371,7 +374,47 @@ def train_model(cfg, variant: str, train: list, val: list, bank: CodeBank, seed:
     model.load_state_dict(best)
     if model.flags.use_proto:
         _project_and_tune(model, train, bank, m, dev)
+    else:
+        _fit_posthoc_prototypes(model, train, bank, m, dev)
     return model
+
+
+def _kmeans(x: np.ndarray, k: int, iters: int = 50, seed: int = 0) -> np.ndarray:
+    """k-means++ / Lloyd in NumPy (scikit-learn's KMeans segfaults next to torch's OpenMP on macOS)."""
+    rng = np.random.default_rng(seed)
+    centres = [x[rng.integers(len(x))]]
+    for _ in range(1, k):
+        d = np.min(((x[:, None] - np.array(centres)[None]) ** 2).sum(-1), 1)
+        centres.append(x[rng.choice(len(x), p=d / d.sum())] if d.sum() > 0 else x[rng.integers(len(x))])
+    c = np.array(centres)
+    for _ in range(iters):
+        a = ((x[:, None] - c[None]) ** 2).sum(-1).argmin(1)
+        new = np.array([x[a == j].mean(0) if (a == j).any() else c[j] for j in range(k)])
+        if np.allclose(new, c):
+            break
+        c = new
+    return c
+
+
+def _fit_posthoc_prototypes(model, train, bank, m, dev):
+    """Prototypes for explanation / novelty when they are not trained jointly: per-class k-means
+    centres of the training embeddings, each snapped to its nearest real training delegation."""
+    base = [s for s in train if s["delta"] == 0]
+    z = predict(model, base, bank, device=dev)["z"]
+    y = np.array([s["y"] for s in base])
+    ids = np.array([s["auth_id"] for s in base])
+    protos, cls, src = [], [], []
+    for c in (0, 1):
+        zc, idc = z[y == c], ids[y == c]
+        if not len(zc):
+            continue
+        k = min(m["prototypes_per_class"], len(zc))
+        for centre in _kmeans(zc, k):
+            j = int(((zc - centre) ** 2).sum(1).argmin())
+            protos.append(zc[j]); cls.append(c); src.append(int(idc[j]))
+    model.register_buffer("post_protos", torch.as_tensor(np.stack(protos), dtype=torch.float32))
+    model.register_buffer("post_proto_class", torch.as_tensor(cls))
+    model.register_buffer("post_proto_source", torch.as_tensor(src))
 
 
 def contract_balanced_probs(samples) -> np.ndarray:

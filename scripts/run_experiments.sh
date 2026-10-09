@@ -17,6 +17,7 @@ mark() { echo "$(date '+%H:%M:%S') $*" | tee -a logs/experiments.log; }
 watched() {   # watched <logfile> <run.py args...>
   local logf=$1; shift
   for attempt in $(seq 0 "$MAX_RESTARTS"); do
+    touch "$logf"            # stall timer starts now, not at the log's last write from an earlier run
     .venv/bin/python -W ignore run.py "$@" --config "$CFG" >> "$logf" 2>&1 &
     local pid=$!
     while kill -0 "$pid" 2>/dev/null; do
