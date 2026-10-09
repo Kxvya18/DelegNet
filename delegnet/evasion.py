@@ -31,6 +31,29 @@ def _drop_edges(s, keep):
             "edt": s["edt"][keep], "efeat": s["efeat"][keep]}
 
 
+def self_submit(s):
+    """Sample-level self-submission (used to augment training data; evaluation rebuilds samples
+    with the sponsor masked in the sampler)."""
+    a, sp = s["centres"][0], s["centres"][1]
+    if sp == a:
+        return s
+    keep = ~((s["etype"] == SPONSOR) & (s["edst"] == a))
+    t = _drop_edges(s, keep)
+    m = t["motifs"].copy()
+    m[SPONSOR_MOTIFS] = 0.0
+    m[MOTIF_NAMES.index("batch")] = 0.0
+    f = t["authf"].copy()
+    f[0], f[1] = 0.0, 1.0                     # no batch, self-sponsored
+    c = t["centres"].copy()
+    c[1] = a
+    return {**t, "motifs": m, "authf": f, "centres": c}
+
+
+AUGMENT = {"self_submit": lambda s: self_submit(s), "fresh_sponsor": lambda s: fresh_sponsor(s),
+           "fresh_contract": lambda s: fresh_contract(s),
+           "combined": lambda s: fresh_contract(self_submit(s))}
+
+
 def fresh_sponsor(s):
     sp = s["centres"][1]
     if sp == s["centres"][0]:           # already self-submitted

@@ -33,7 +33,7 @@ from .train import CodeBank, build_samples, predict, train_model
 log = logging.getLogger("exp")
 
 MAIN = ["HashBlocklist", "OpcodeKNN-raw", "OpcodeKNN", "XGBoost", "GraphSAGE", "StaticGAT", "TGAT", "DelegNet"]
-ABLATIONS = ["DelegNet-noGate", "DelegNet-graphOnly", "DelegNet-codeOnly"]
+ABLATIONS = ["DelegNet-cleanGate", "DelegNet-noGate", "DelegNet-graphOnly", "DelegNet-codeOnly"]
 
 
 def _labelled(tg):

@@ -23,8 +23,8 @@ import torch.nn.functional as F
 from .patterns.motifs import MOTIF_NAMES
 
 log = logging.getLogger("stacking")
-STACKED = {"DelegNet": "learned", "DelegNet-noGate": "average", "DelegNet-graphOnly": "graph",
-           "DelegNet-codeOnly": "code"}
+STACKED = {"DelegNet": "robust", "DelegNet-noGate": "average", "DelegNet-graphOnly": "graph",
+           "DelegNet-codeOnly": "code", "DelegNet-cleanGate": "learned"}
 EVIDENCE = [MOTIF_NAMES.index(n) for n in MOTIF_NAMES]
 
 
@@ -134,6 +134,11 @@ class StackedDelegNet:
     def __init__(self, mode, graph, code, memory, gate=None, mu=None, sd=None, device="cpu"):
         self.mode, self.graph, self.code, self.memory = mode, graph, code, memory
         self.gate, self.mu, self.sd, self.device = gate, mu, sd, device
+        self.rule, self.platt = "gate", [(1.0, 0.0), (1.0, 0.0)]
+
+    def calib(self, p, i):
+        a, b = self.platt[i]
+        return 1 / (1 + np.exp(-(a * _logit(p) + b)))
 
     def experts(self, S, bank, full=False):
         from .train import predict
@@ -152,6 +157,10 @@ class StackedDelegNet:
             return dict(p=cp, **extra)
         if self.mode == "average":
             return dict(p=1 / (1 + np.exp(-(_logit(gp) + _logit(cp)) / 2)), **extra)
+        if self.mode == "robust" and self.rule == "either":
+            # an attacker has to beat both experts: flag if either calibrated expert flags
+            pg, pc = self.calib(gp, 0), self.calib(cp, 1)
+            return dict(p=np.maximum(pg, pc), graph_p=gp, code_p=cp, gate=(pg >= pc).astype(float), **extra)
         T = lambda a: torch.as_tensor(a, dtype=torch.float32)  # noqa: E731
         logit, gv = self.gate(T((_evidence(S) - self.mu) / self.sd), T(_logit(gp)), T(_logit(cp)))
         return dict(p=torch.sigmoid(logit).numpy(), gate=gv.numpy(), graph_p=gp, code_p=cp, **extra)
@@ -182,16 +191,27 @@ def fit_stacked(cfg, method, train, val, bank, seed, train_graph) -> tuple[Stack
     code = cands[int(np.argmax(scores))]
     log.info("code expert: %s (validation AUROC learned %.4f, retrieval %.4f)", type(code).__name__, *scores)
     model = StackedDelegNet(mode, graph, code, list(bank.memory), device=cfg["model"]["device"])
-    if mode != "learned":
+    if mode not in ("learned", "robust"):
         return model, cal_half
 
-    gp, cp = model.experts(fit_half, bank)
-    ev_fit = _evidence(fit_half)
+    if mode == "robust":
+        # adversarial augmentation: the gate also sees attacked copies of the malicious validation
+        # rows (attacker-controlled features changed), so it learns not to trust behaviour that an
+        # attacker can fake. Benign rows are left untouched, as attacks only apply to scams.
+        from .evasion import AUGMENT
+        aug = list(fit_half)
+        for fn in AUGMENT.values():
+            aug += [fn(s) for s in fit_half if s["y"] == 1]
+        fit_rows = aug
+    else:
+        fit_rows = fit_half
+    gp, cp = model.experts(fit_rows, bank)
+    ev_fit = _evidence(fit_rows)
     mu, sd = ev_fit.mean(0), ev_fit.std(0) + 1e-6
     T = lambda a: torch.as_tensor(a, dtype=torch.float32)  # noqa: E731
     torch.manual_seed(seed)
     gate = Gate(ev_fit.shape[1])
-    y = T([s["y"] for s in fit_half])
+    y = T([s["y"] for s in fit_rows])
     pos = (y == 0).sum().clamp_min(1) / (y == 1).sum().clamp_min(1)
     opt = torch.optim.Adam(gate.parameters(), lr=0.05, weight_decay=1e-3)
     ev, lg, lc = T((ev_fit - mu) / sd), T(_logit(gp)), T(_logit(cp))
@@ -200,4 +220,38 @@ def fit_stacked(cfg, method, train, val, bank, seed, train_graph) -> tuple[Stack
         loss = F.binary_cross_entropy_with_logits(logit, y, pos_weight=pos)
         opt.zero_grad(); loss.backward(); opt.step()
     model.gate, model.mu, model.sd = gate.eval(), mu, sd
+    if mode == "robust":
+        # Platt-calibrate each expert on the (augmented) gate rows, then choose the combination
+        # rule - adversarially trained gate vs "either expert flags" - by validation AUROC on the
+        # calibration half plus its attacked copies. Validation only, never test.
+        from sklearn.metrics import roc_auc_score
+        yv = np.array([s["y"] for s in fit_rows])
+        for i, pe in enumerate((gp, cp)):
+            a, b = _platt(_logit(pe), yv)
+            model.platt[i] = (a, b)
+        cal_rows = list(cal_half)
+        for fn in AUGMENT.values():
+            cal_rows += [fn(s) for s in cal_half if s["y"] == 1]
+        yc = np.array([s["y"] for s in cal_rows])
+        score = {}
+        for rule in ("gate", "either"):
+            model.rule = rule
+            score[rule] = roc_auc_score(yc, model.predict(cal_rows, bank)) if 0 < yc.sum() < len(yc) else 0.5
+        model.rule = max(score, key=score.get)
+        log.info("robust DelegNet rule: %s (validation AUROC clean+attacked: %s)", model.rule,
+                 {k: round(v, 4) for k, v in score.items()})
     return model, cal_half
+
+
+def _platt(z, y):
+    zt, yt = torch.as_tensor(z, dtype=torch.float32), torch.as_tensor(y, dtype=torch.float32)
+    a, b = torch.ones(1, requires_grad=True), torch.zeros(1, requires_grad=True)
+    opt = torch.optim.LBFGS([a, b], max_iter=100)
+
+    def closure():
+        opt.zero_grad()
+        loss = F.binary_cross_entropy_with_logits(a * zt + b, yt)
+        loss.backward()
+        return loss
+    opt.step(closure)
+    return float(a), float(b)
