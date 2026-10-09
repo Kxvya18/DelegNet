@@ -98,7 +98,7 @@ def make_report(cfg):
         fig.tight_layout()
         fig.savefig(rep / "fig_robustness_code.pdf")
 
-    for name in ("robustness_structural", "open_set", "campaign_attribution"):
+    for name in ("evasion_suite", "presignature", "open_set", "campaign_attribution", "early_warning"):
         f = root / f"{name}.csv"
         if f.exists():
             d = pd.read_csv(f)

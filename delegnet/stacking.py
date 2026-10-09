@@ -94,6 +94,17 @@ class CodeExpert:
         return torch.sigmoid(X @ self.w + self.b).numpy()
 
 
+class RetrievalCodeExpert:
+    """Non-parametric code expert: nearest remembered scam pattern vs nearest benign pattern."""
+
+    def fit(self, train, bank, seed=0):
+        return self
+
+    def predict(self, S, bank):
+        sims = np.array([bank.pattern_sims(s["chain"], int(s["nodes"][s["centres"][2]])) for s in S], np.float32)
+        return np.clip(0.5 + 0.5 * (sims[:, 0] - sims[:, 1]), 1e-4, 1 - 1e-4)
+
+
 class Gate(torch.nn.Module):
     """p = sigmoid(g * graph_logit + (1 - g) * code_logit * a + c), g = sigmoid(evidence features)."""
 
@@ -161,7 +172,15 @@ def fit_stacked(cfg, method, train, val, bank, seed, train_graph) -> tuple[Stack
         _GRAPH_CACHE[key] = train_graph(train, val)
     graph = _GRAPH_CACHE[key]
     bank.build_memory(train)
-    code = CodeExpert().fit([s for s in train if s["delta"] == 0] or train, bank, seed)
+    train0 = [s for s in train if s["delta"] == 0] or train
+    # code expert: learned (idioms + memory) or pure retrieval, whichever ranks the gate-fit half of
+    # the validation families better (validation only; never the test)
+    from sklearn.metrics import roc_auc_score
+    yf = np.array([s["y"] for s in fit_half])
+    cands = [CodeExpert().fit(train0, bank, seed), RetrievalCodeExpert()]
+    scores = [roc_auc_score(yf, c.predict(fit_half, bank)) if 0 < yf.sum() < len(yf) else 0.5 for c in cands]
+    code = cands[int(np.argmax(scores))]
+    log.info("code expert: %s (validation AUROC learned %.4f, retrieval %.4f)", type(code).__name__, *scores)
     model = StackedDelegNet(mode, graph, code, list(bank.memory), device=cfg["model"]["device"])
     if mode != "learned":
         return model, cal_half

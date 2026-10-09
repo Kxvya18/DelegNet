@@ -88,7 +88,7 @@ experiment:
   seeds: [0, 1, 2]                # 3 seeds keeps the full run within a day on one Mac GPU
   zeroday_folds: 3
   # zero-day is the headline result: main methods with 3 seeds; ablations with 1 seed
-  methods_zeroday: [HashBlocklist, OpcodeKNN, XGBoost, GraphSAGE, TGAT, DelegNet]
+  methods_zeroday: [HashBlocklist, OpcodeKNN-raw, OpcodeKNN, XGBoost, GraphSAGE, TGAT, DelegNet]
   seeds_zeroday_ablation: [0]
   methods_zeroday_ablation: [DelegNet-noGate, DelegNet-graphOnly, DelegNet-codeOnly]
   seeds_temporal: [0]

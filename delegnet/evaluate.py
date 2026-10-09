@@ -76,7 +76,7 @@ def early_warning(g, preds: pd.DataFrame, tau: float) -> dict:
             total += v.sum()
             if alert is not None:
                 saved += v[out > alert].sum()
-                row["pre_drain"] = alert < o.third_ev[aid]
+                row["pre_drain"] = bool(alert < o.third_ev[aid])
                 if row["pre_drain"]:
                     leads.append(g.ts[o.third_ev[aid]] - g.ts[alert])
             else:
@@ -85,11 +85,11 @@ def early_warning(g, preds: pd.DataFrame, tau: float) -> dict:
     r = pd.DataFrame(res)
     mal = r[(r.y == 1) & r.get("pre_drain", pd.Series(dtype=bool)).notna()] if "pre_drain" in r else r.iloc[:0]
     return dict(
-        detected=float(r[r.y == 1].alerted.mean()) if (r.y == 1).any() else np.nan,
-        pre_drain_rate=float(mal.pre_drain.mean()) if len(mal) else np.nan,
+        detected=float(r[r.y == 1].alerted.astype(float).mean()) if (r.y == 1).any() else np.nan,
+        pre_drain_rate=float(mal.pre_drain.astype(float).mean()) if len(mal) else np.nan,
         median_lead_s=float(np.median(leads)) if leads else np.nan,
         value_saved_ratio=float(saved / total) if total else np.nan,
-        benign_false_alarm=float(r[r.y == 0].alerted.mean()) if (r.y == 0).any() else np.nan,
+        benign_false_alarm=float(r[r.y == 0].alerted.astype(float).mean()) if (r.y == 0).any() else np.nan,
     )
 
 

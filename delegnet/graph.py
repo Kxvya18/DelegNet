@@ -79,8 +79,11 @@ class TemporalGraph:
         return out
 
     def cutoff_for(self, auth_ev: int, delta_s: float) -> int:
-        """Last event id visible `delta_s` seconds after the authorization."""
-        if delta_s <= 0:
+        """Last event id visible `delta_s` seconds after the authorization; delta_s < 0 means the
+        moment of signing, before the authorization itself is on chain."""
+        if delta_s < 0:
+            return auth_ev - 1
+        if delta_s == 0:
             return auth_ev
         return int(np.searchsorted(self.ts, self.ts[auth_ev] + delta_s, side="right") - 1)
 
@@ -134,7 +137,7 @@ class TemporalGraph:
         prev_auth = (self.etype[prev] == AUTH).sum() if len(prev) else 0
         f = self.efeat[auth_ev]
         return np.array([0.0 if mask_sponsor else f[4], 1.0 if mask_sponsor else f[5],
-                         float(prev_auth == 0), np.log1p(self.ts[cutoff] - self.ts[auth_ev]),
+                         float(prev_auth == 0), np.log1p(max(self.ts[cutoff] - self.ts[auth_ev], 0.0)),
                          float(prev_auth > 0)], dtype=np.float32)
 
 
