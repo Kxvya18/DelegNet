@@ -78,6 +78,44 @@ class OpcodeKNN:
         return 0.5 + 0.5 * (sim[:, 0] - sim[:, 1])
 
 
+class OpcodeKNNRaw(OpcodeKNN):
+    """Prior-art fuzzy hashing: opcode 4-gram similarity on the *raw* deployed bytecode, without
+    DelegNet's canonicalisation (so junk instructions and equivalent-opcode swaps count)."""
+    name = "OpcodeKNN-raw"
+
+    @staticmethod
+    def _ops(bank, s):
+        from .evm import opcode_sequence
+        raw = bank.raw(s["chain"], int(s["nodes"][s["centres"][2]]))
+        return None if raw is None else opcode_sequence(raw)
+
+    def fit(self, train, val, bank):
+        ref = {}
+        for s in train:
+            k = (s["chain"], int(s["nodes"][s["centres"][2]]))
+            ops = self._ops(bank, s)
+            if ops is not None:
+                ref.setdefault(k, [self.grams(ops), []])[1].append(s["y"])
+        self.ref = [(g, np.mean(ys)) for g, ys in ref.values()]
+        return self
+
+    def similarities(self, samples, bank) -> np.ndarray:
+        cache, out = {}, []
+        for s in samples:
+            ops = self._ops(bank, s)
+            if ops is None:
+                out.append((0.0, 0.0))
+                continue
+            key = hash(tuple(ops))
+            if key not in cache:
+                g = self.grams(ops)
+                best_m = max((len(g & r) / max(len(g | r), 1) for r, y in self.ref if y >= 0.5), default=0)
+                best_b = max((len(g & r) / max(len(g | r), 1) for r, y in self.ref if y < 0.5), default=0)
+                cache[key] = (best_m, best_b)
+            out.append(cache[key])
+        return np.array(out, dtype=np.float32)
+
+
 def tabular(samples, bank) -> np.ndarray:
     rows = []
     for s in samples:
@@ -108,4 +146,5 @@ class XGBoost:
         return xgb_worker.call(xgb_worker.predict, self.raw, tabular(samples, bank), True)
 
 
-BASELINES = {"HashBlocklist": HashBlocklist, "OpcodeKNN": OpcodeKNN, "XGBoost": XGBoost}
+BASELINES = {"HashBlocklist": HashBlocklist, "OpcodeKNN": OpcodeKNN, "OpcodeKNN-raw": OpcodeKNNRaw,
+             "XGBoost": XGBoost}

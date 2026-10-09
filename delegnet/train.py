@@ -32,6 +32,7 @@ def _make(args):
     auth_id, event, delta, label, gcfg, mask = args
     g = _G
     cutoff = g.cutoff_for(event, delta)
+    mask = mask or delta < 0          # at signing time the submitter is not known yet
     s = g.sample(event, cutoff, gcfg["k1"], gcfg["k2"], gcfg["max_nodes"], mask_sponsor=mask)
     s["motifs"] = motif_vector(g, auth_id, cutoff, gcfg["max_siblings"], gcfg["motif_delta_s"], mask_sponsor=mask)
     s["authf"] = g.auth_features(event, cutoff, mask_sponsor=mask)
@@ -65,6 +66,7 @@ class CodeBank:
     def __init__(self, graphs: dict):
         self.graphs = graphs
         self.override = {}
+        self.raw_override = {}
         self.variants = {}      # (chain, node) -> mutated code variants used as training augmentation
         self.augment = False
         self.encoder = None     # frozen pre-trained code encoder (kept on the CPU)
@@ -184,6 +186,12 @@ class CodeBank:
             if n in g.code_bytes:
                 raw = mutate_bytecode(g.code_bytes[n], rng, strength)
                 self.override[(chain, n)] = (encode_tokens(code_idioms.tokens(raw)), code_idioms.idioms(raw))
+                self.raw_override[(chain, n)] = raw
+        self.sims = {}
+
+    def raw(self, chain, node):
+        """Deployed bytecode as an attacker would ship it (mutated copy if one is active)."""
+        return self.raw_override.get((chain, node), self.graphs[chain].code_bytes.get(node))
 
 
 def collate(samples: list[dict], bank: CodeBank, device="cpu") -> dict:
