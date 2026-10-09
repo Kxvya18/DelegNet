@@ -31,7 +31,7 @@ def main():
             continue
         p = m.predict(S, bank) if hasattr(m, "fit") else predict(m, S, bank)["p"]
         out.append(pd.DataFrame(dict(method=meth, y=[s["y"] for s in S], p=p)))
-    pd.concat(out).to_csv("paper/tables/presignature_scores.csv", index=False)
+    pd.concat(out).to_csv("results/tables/presignature_scores.csv", index=False)
 
 
 if __name__ == "__main__":

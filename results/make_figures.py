@@ -1,6 +1,6 @@
 """Paper figures (monochrome, IEEE column width) and CSV tables from the experiment outputs.
 
-  python paper/make_figures.py        # writes paper/figures/*.pdf|png and paper/tables/*.csv
+  python results/make_figures.py      # writes results/figures/*.pdf|png and results/tables/*.csv
 """
 import glob
 import os
@@ -17,7 +17,7 @@ from matplotlib.ticker import LogLocator, NullFormatter  # noqa: E402
 RUNS = Path("runs")
 DATA = Path(os.environ.get("DELEGNET_DATA_ROOT", "data/full")) / "ethereum"
 SCAN = Path(os.environ.get("DELEGNET_SCAN_ROOT", "data")) / "ethereum"
-FIG, TAB = Path("paper/figures"), Path("paper/tables")
+FIG, TAB = Path("results/figures"), Path("results/tables")
 FIG.mkdir(parents=True, exist_ok=True)
 TAB.mkdir(parents=True, exist_ok=True)
 
@@ -333,7 +333,7 @@ cache = TAB / "presignature_scores.csv"
 if not cache.exists():
     import subprocess
     import sys
-    subprocess.run([sys.executable, "-W", "ignore", "paper/presignature_scores.py"], check=True)
+    subprocess.run([sys.executable, "-W", "ignore", "results/presignature_scores.py"], check=True)
 ps_sc = pd.read_csv(cache).assign(model=lambda d: d.method.map(name)).pipe(_paper_only)
 fig, axes = plt.subplots(1, 2, figsize=(DCOL, 2.2), gridspec_kw=dict(wspace=0.28))
 curves(axes[0], axes[1], ps_sc, "Screening at signing time")
@@ -531,5 +531,5 @@ for ax, f in zip(axes.flat, pngs):
     ax.axis("off")
 for ax in list(axes.flat)[len(pngs):]:
     ax.axis("off")
-fig.savefig("paper/figures_preview.png", dpi=110)
+fig.savefig("results/figures_preview.png", dpi=110)
 print("figures:", [f.name for f in pngs])
