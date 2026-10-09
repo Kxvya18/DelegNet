@@ -25,24 +25,13 @@ class Flags:
     use_time: bool = True
     use_rel: bool = True
     attention: bool = True
-    code: str = "none"            # transformer | idioms | none (node-level code features, baselines only)
-    use_motifs: bool = False      # motif vector concatenated into the readout (unified architecture)
-    use_proto: bool = False       # prototype layer (explanations / novelty)
-    memory: bool = False          # code-pattern retrieval memory
-    evidence_dropout: bool = False  # train with sibling evidence hidden on a share of rows
-    arch: str = "unified"         # unified (graph baselines) | gated (DelegNet)
-    gate: str = "learned"         # gated arch: learned | fixed (0.5) | graph (graph expert only)
+    code: str = "none"            # transformer | idioms | none (node-level code features)
+    use_motifs: bool = False      # motif vector concatenated into the readout
+    use_proto: bool = False       # jointly trained prototype layer (otherwise post-hoc prototypes)
 
 
-# DelegNet: evidence-gated mixture of a temporal-graph expert and a code-pattern expert.
-_DELEG = dict(arch="gated", use_rel=False, use_proto=True, memory=True, evidence_dropout=True)
+# graph models; DelegNet itself is the evidence-gated stack in stacking.py (TGAT graph expert)
 VARIANTS = {
-    "DelegNet":                   Flags(**_DELEG),
-    "DelegNet-noGate":            Flags(**{**_DELEG, "gate": "fixed"}),
-    "DelegNet-noCodeExpert":      Flags(**{**_DELEG, "gate": "graph"}),
-    "DelegNet-noMemory":          Flags(**{**_DELEG, "memory": False}),
-    "DelegNet-noEvidenceDropout": Flags(**{**_DELEG, "evidence_dropout": False}),
-    "DelegNet-noProto":           Flags(**{**_DELEG, "use_proto": False}),
     "TGAT":      Flags(use_rel=False),
     "StaticGAT": Flags(use_rel=False, use_time=False),
     "GraphSAGE": Flags(use_rel=False, use_time=False, attention=False),
@@ -151,16 +140,6 @@ class DelegNet(nn.Module):
         self.out = nn.Sequential(nn.GELU(), nn.Linear(d, 1))
         if flags.use_proto:
             self.proto = PrototypeLayer(d, m["prototypes_per_class"])
-        if flags.arch == "gated":
-            # Pattern Recognition Module: a code-pattern expert and an evidence gate. The gate reads
-            # the temporal attack motifs (how much behavioural evidence exists for this contract yet)
-            # and decides, per delegation, how far to trust the graph expert vs the code expert.
-            h2 = max(d // 2, 16)
-            code_in = len(IDIOM_NAMES) + (2 if flags.memory else 0)
-            self.code_expert = nn.Sequential(nn.Linear(code_in, h2), nn.GELU(), nn.Dropout(m["dropout"]),
-                                             nn.Linear(h2, 1))
-            self.gate_net = nn.Sequential(nn.Linear(len(MOTIF_NAMES) + len(AUTH_FEATS), h2), nn.GELU(),
-                                          nn.Linear(h2, 1))
 
     def encode_code(self, tokens, idioms, cached=None):
         parts = [self.idiom(idioms)]
@@ -202,18 +181,4 @@ class DelegNet(nn.Module):
         if self.flags.use_proto:
             plogit, sim, d2 = self.proto(z)
             out.update(proto_logit=plogit, sim=sim, d2=d2)
-        if self.flags.arch == "gated":
-            graph_logit = out["logit"]
-            idi = torch.zeros(len(c), len(IDIOM_NAMES), device=z.device)
-            cs = b["code_slot"][c[:, 2]]
-            if b["code_idioms"].shape[0]:
-                idi[cs >= 0] = b["code_idioms"][cs[cs >= 0]]
-            code_in = torch.cat([idi, b["pattern_sims"]], 1) if self.flags.memory else idi
-            code_logit = self.code_expert(code_in).squeeze(1)
-            if self.flags.gate == "learned":
-                g = torch.sigmoid(self.gate_net(torch.cat([b["motifs"], b["authf"]], 1)).squeeze(1))
-            else:
-                g = torch.full_like(graph_logit, 1.0 if self.flags.gate == "graph" else 0.5)
-            out.update(logit=g * graph_logit + (1 - g) * code_logit, gate=g,
-                       graph_logit=graph_logit, code_logit=code_logit)
         return out

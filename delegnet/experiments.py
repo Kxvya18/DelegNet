@@ -32,8 +32,7 @@ from .train import CodeBank, build_samples, predict, train_model
 log = logging.getLogger("exp")
 
 MAIN = ["HashBlocklist", "OpcodeKNN", "XGBoost", "GraphSAGE", "StaticGAT", "TGAT", "DelegNet"]
-ABLATIONS = ["DelegNet-noGate", "DelegNet-noCodeExpert", "DelegNet-noMemory", "DelegNet-noEvidenceDropout",
-             "DelegNet-noProto"]
+ABLATIONS = ["DelegNet-noGate", "DelegNet-graphOnly", "DelegNet-codeOnly"]
 
 
 def _labelled(tg):
@@ -166,7 +165,18 @@ def run_zeroday(cfg, k=None, tag="zeroday"):
 
 
 def _fit_predict(cfg, method, train, val, tests: dict, bank, seed, out_dir):
+    from .stacking import STACKED, fit_stacked
     from .tuning import tuned
+    if method in STACKED:
+        gcfg, _ = tuned(cfg, "TGAT")   # the graph expert uses TGAT's own tuned configuration
+        m, cal = fit_stacked(cfg, method, train, val, bank, seed,
+                             lambda tr, va: train_model(gcfg, "TGAT", tr, va, bank, seed))
+        preds = {k: m.predict_full(v, bank) for k, v in tests.items()}
+        pv, yv = m.predict(cal, bank), np.array([s["y"] for s in cal])
+        (out_dir / "models").mkdir(exist_ok=True, parents=True)
+        pickle.dump(m, open(out_dir / "models" / f"{method}_s{seed}.pkl", "wb"))
+        return preds, dict(tau_f1=best_f1_threshold(yv, pv),
+                           tau_fpr=threshold_at_fpr(yv, pv, cfg["experiment"]["target_fpr"]))
     cfg, xgb_params = tuned(cfg, method)
     if method in BASELINES:
         m = BASELINES[method](seed, xgb_params) if method == "XGBoost" else BASELINES[method]()
@@ -191,6 +201,9 @@ def _frame(samples, pred, method, seed, split):
                            cutoff=[s["cutoff"] for s in samples], y=[s["y"] for s in samples], p=pred["p"]))
     if "d2" in pred:
         df["novelty"] = pred["d2"].min(1)
+    for k in ("gate", "graph_p", "code_p"):
+        if k in pred:
+            df[k] = pred[k]
     df["method"], df["seed"], df["split"] = method, seed, split
     return df
 
@@ -384,7 +397,7 @@ def run_analyses(cfg):
     # ---- 4. open-set: are unseen families further from every prototype?
     fam = pd.read_parquet(root / "family" / "predictions.parquet")
     os_rows = []
-    for seed, grp in fam[fam.method == "DelegNet"].groupby("seed"):
+    for seed, grp in fam[(fam.method == "DelegNet") & ("novelty" in fam)].groupby("seed"):
         lab = np.r_[np.zeros((grp.split == "test_id").sum()), np.ones((grp.split == "test_ood").sum())]
         sc = np.r_[grp[grp.split == "test_id"].novelty, grp[grp.split == "test_ood"].novelty]
         conf = np.r_[grp[grp.split == "test_id"].p, grp[grp.split == "test_ood"].p]

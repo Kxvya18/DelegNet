@@ -90,8 +90,7 @@ experiment:
   # zero-day is the headline result: main methods with 3 seeds; ablations with 1 seed
   methods_zeroday: [HashBlocklist, OpcodeKNN, XGBoost, GraphSAGE, TGAT, DelegNet]
   seeds_zeroday_ablation: [0]
-  methods_zeroday_ablation: [DelegNet-noGate, DelegNet-noCodeExpert, DelegNet-noMemory, DelegNet-noEvidenceDropout,
-                             DelegNet-noProto]
+  methods_zeroday_ablation: [DelegNet-noGate, DelegNet-graphOnly, DelegNet-codeOnly]
   seeds_temporal: [0]
   methods_temporal: [HashBlocklist, OpcodeKNN, XGBoost, GraphSAGE, TGAT, DelegNet]
   seeds_family: [0]
@@ -101,7 +100,7 @@ experiment:
   mutation_strengths: [0, 0.5, 1, 2, 4]
 
 tuning:                          # equal budget per method, validation families only
-  methods: [DelegNet, TGAT, GraphSAGE, XGBoost]
+  methods: [TGAT, GraphSAGE, XGBoost]      # DelegNet's graph expert reuses TGAT's tuned configuration
   trials: 6
   epoch_samples: 3000
   epochs: 15
@@ -121,7 +120,6 @@ model:
   patience: 3
   batch_size: 64
   epoch_samples: 6000         # contract-balanced draws per epoch
-  evidence_dropout: 0.5       # share of training rows seen as first victims (sibling evidence hidden)
   lambda_cluster: 0.05
   lambda_sep: 0.01
   lambda_div: 0.01

@@ -23,9 +23,6 @@ log = logging.getLogger("tuning")
 NEURAL = {"lr": [1e-3, 5e-4, 2e-4], "dim": [64, 128], "dropout": [0.1, 0.3], "layers": [1, 2],
           "weight_decay": [1e-4, 1e-3]}
 SPACE = {
-    # whether the prototype layer is trained jointly (its losses shape the embedding) is a
-    # validation-selected choice; prototypes are fitted for explanations either way
-    "DelegNet": {**NEURAL, "flag:use_proto": [True, False]},
     "TGAT": NEURAL,
     "GraphSAGE": NEURAL,
     "XGBoost": {"max_depth": [3, 4, 6, 8], "learning_rate": [0.03, 0.1], "min_child_weight": [1, 5],
@@ -59,24 +56,10 @@ def apply(cfg: dict, method: str, params: dict) -> tuple[dict, dict]:
 
 
 def tuned(cfg: dict, method: str) -> tuple[dict, dict]:
-    """Apply the tuned configuration if one exists. Ablations inherit DelegNet's configuration
-    (minus the component they remove), so they differ from DelegNet in one factor only."""
+    """Apply the tuned configuration of `method` if one exists."""
     f = Path(cfg["run_root"]) / "tuning" / "best.json"
-    if not f.exists():
-        return cfg, {}
-    best = json.loads(f.read_text())
-    key = "DelegNet" if method.startswith("DelegNet-") else method
-    if key not in best:
-        return cfg, {}
-    cfg2, xgb = apply(cfg, key, best[key])
-    if key != method and "flag_overrides" in cfg2["model"]:
-        # ablations inherit DelegNet's tuned choices except the component they remove
-        import dataclasses
-        from .model import VARIANTS
-        base, abl = dataclasses.asdict(VARIANTS["DelegNet"]), dataclasses.asdict(VARIANTS[method])
-        flags = cfg2["model"]["flag_overrides"].pop("DelegNet")
-        cfg2["model"]["flag_overrides"][method] = {k: v for k, v in flags.items() if base[k] == abl[k]}
-    return cfg2, xgb
+    best = json.loads(f.read_text()) if f.exists() else {}
+    return apply(cfg, method, best[method]) if method in best else (cfg, {})
 
 
 def _val_scores(yv, pv):
