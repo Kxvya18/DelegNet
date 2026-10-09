@@ -15,7 +15,9 @@ logs/
 labels/*
 !labels/README.md
 
-# paper previews (generated)
-paper/figures/*.png
-paper/figures_preview*.png
-paper/tables/presignature_scores.csv
+# manuscript and dataset release are kept outside the repository
+paper/
+# generated previews and caches
+results/figures/*.png
+results/figures_preview*.png
+results/tables/presignature_scores.csv
