@@ -1,0 +1,10 @@
+,value
+authorizations,637846.0
+non_revoking,634828.0
+authorities,464178.0
+delegate_contracts,661.0
+batched_share,0.6757822421085967
+labelled_malicious_contracts,49.0
+labelled_benign_contracts,11.0
+same_block_theft_share,0.6774755927475593
+median_theft_delay_s,0.0

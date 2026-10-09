@@ -1,0 +1,7 @@
+model,Zero-day AUROC,First-victim AUROC,Combined-evasion recall,Self-submit recall,Disguised-code recall,Pre-signature recall
+DelegNet,0.9823,0.9456,0.984,0.984,0.984,0.984
+TGAT,0.9991,0.9177,0.2279,0.4502,0.9998,0.5007
+GraphSAGE,0.9994,0.898,0.2291,0.5483,0.9999,0.5353
+XGBoost,0.9984,0.8986,0.6667,0.6657,1.0,0.6655
+Fuzzy hash,0.9746,0.9184,0.3333,0.9813,0.3333,0.9813
+Blocklist,0.5,0.5,0.0,0.0,0.0,0.0

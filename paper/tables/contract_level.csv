@@ -1,0 +1,7 @@
+,auroc_mean,ci_lo,ci_hi
+DelegNet,0.9519,0.8693,1.0
+TGAT,0.9871,0.9564,1.0
+GraphSAGE,0.9834,0.9444,1.0
+XGBoost,0.8934,0.7346,1.0
+Fuzzy hash,0.9652,0.908,1.0
+Blocklist,0.5,0.5,0.5

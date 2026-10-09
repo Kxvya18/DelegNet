@@ -1,0 +1,7 @@
+model,self_submit,fresh_sponsor,fresh_contract,code_disguise,combined
+Blocklist,0.0,0.0,0.0,0.0,0.0
+DelegNet,0.0,0.0,0.0,0.0,0.0
+Fuzzy hash,0.0,0.0,0.0,-0.0004,-0.0004
+GraphSAGE,-0.0097,-0.0047,-0.0018,0.0,-0.0112
+TGAT,-0.0091,-0.0047,-0.002,0.0,-0.0132
+XGBoost,-0.0066,-0.0064,-0.0005,0.0,-0.0066
