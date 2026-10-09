@@ -421,13 +421,15 @@ def run_analyses(cfg):
                 near = d2.argmin(1)
                 y = np.array([s["y"] for s in test0])
                 fams = tg.set_index("auth_id").loc[[s["auth_id"] for s in test0], "family"].values
-                for p in range(len(m.proto.protos)):
+                pclass = m.proto.proto_class if hasattr(m, "proto") else m.post_proto_class
+                psource = m.proto.source if hasattr(m, "proto") else m.post_proto_source
+                for p in range(len(pclass)):
                     sel = near == p
-                    src_aid = int(m.proto.source[p])
+                    src_aid = int(psource[p])
                     srow = tg[tg.auth_id == src_aid]
                     protos.append(dict(
-                        seed=seed, proto=p, cls=int(m.proto.proto_class[p]), n_test=int(sel.sum()),
-                        label_purity=float((y[sel] == int(m.proto.proto_class[p])).mean()) if sel.any() else np.nan,
+                        seed=seed, proto=p, cls=int(pclass[p]), n_test=int(sel.sum()),
+                        label_purity=float((y[sel] == int(pclass[p])).mean()) if sel.any() else np.nan,
                         family_purity=float(pd.Series(fams[sel]).value_counts(normalize=True).iloc[0]) if sel.any() else np.nan,
                         source_auth_id=src_aid,
                         source_tx=srow.tx_hash.iloc[0] if len(srow) else "",

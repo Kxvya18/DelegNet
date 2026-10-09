@@ -23,7 +23,9 @@ log = logging.getLogger("tuning")
 NEURAL = {"lr": [1e-3, 5e-4, 2e-4], "dim": [64, 128], "dropout": [0.1, 0.3], "layers": [1, 2],
           "weight_decay": [1e-4, 1e-3]}
 SPACE = {
-    "DelegNet": NEURAL,
+    # whether the prototype layer is trained jointly (its losses shape the embedding) is a
+    # validation-selected choice; prototypes are fitted for explanations either way
+    "DelegNet": {**NEURAL, "flag:use_proto": [True, False]},
     "TGAT": NEURAL,
     "GraphSAGE": NEURAL,
     "XGBoost": {"max_depth": [3, 4, 6, 8], "learning_rate": [0.03, 0.1], "min_child_weight": [1, 5],
@@ -67,8 +69,13 @@ def tuned(cfg: dict, method: str) -> tuple[dict, dict]:
     if key not in best:
         return cfg, {}
     cfg2, xgb = apply(cfg, key, best[key])
-    if key != method and "flag_overrides" in cfg2["model"]:   # carry backbone choice to the ablation
-        cfg2["model"]["flag_overrides"][method] = cfg2["model"]["flag_overrides"].pop("DelegNet")
+    if key != method and "flag_overrides" in cfg2["model"]:
+        # ablations inherit DelegNet's tuned choices except the component they remove
+        import dataclasses
+        from .model import VARIANTS
+        base, abl = dataclasses.asdict(VARIANTS["DelegNet"]), dataclasses.asdict(VARIANTS[method])
+        flags = cfg2["model"]["flag_overrides"].pop("DelegNet")
+        cfg2["model"]["flag_overrides"][method] = {k: v for k, v in flags.items() if base[k] == abl[k]}
     return cfg2, xgb
 
 
