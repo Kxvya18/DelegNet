@@ -16,12 +16,12 @@ def fit(X, y, Xv, yv, seed, params=None):
     return bytes(m.get_booster().save_raw("ubj"))
 
 
-def predict(raw, X, leaves=False):
+def predict(raw, X):
     import xgboost as xgb
     b = xgb.Booster()
     b.load_model(bytearray(raw))
     d = xgb.DMatrix(X)
-    return b.predict(d, pred_leaf=True) if leaves else b.predict(d)
+    return b.predict(d)
 
 
 def call(fn, *args):

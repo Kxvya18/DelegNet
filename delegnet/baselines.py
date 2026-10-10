@@ -143,9 +143,6 @@ class XGBoost:
     def predict(self, samples, bank):
         return xgb_worker.call(xgb_worker.predict, self.raw, tabular(samples, bank))
 
-    def leaves(self, samples, bank):
-        return xgb_worker.call(xgb_worker.predict, self.raw, tabular(samples, bank), True)
-
 
 BASELINES = {"HashBlocklist": HashBlocklist, "OpcodeKNN": OpcodeKNN, "OpcodeKNN-raw": OpcodeKNNRaw,
              "XGBoost": XGBoost}
