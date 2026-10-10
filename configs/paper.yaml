@@ -87,41 +87,31 @@ experiment:
   few_shot_k: [10, 50]
   seeds: [0, 1, 2]                # 3 seeds keeps the full run within a day on one Mac GPU
   zeroday_folds: 3
-  # zero-day is the headline result: main methods with 3 seeds; ablations with 1 seed
-  methods_zeroday: [HashBlocklist, OpcodeKNN-raw, OpcodeKNN, XGBoost, GraphSAGE, TGAT, DelegNet]
-  seeds_zeroday_ablation: [0]
-  methods_zeroday_ablation: [DelegNet-cleanGate, DelegNet-noGate, DelegNet-graphOnly, DelegNet-codeOnly]
+  # zero-day is the headline result (3 seeds). OpcodeKNN is the paper's DelegNet; the rest are baselines
+  methods_zeroday: [HashBlocklist, OpcodeKNN-raw, OpcodeKNN, XGBoost, GraphSAGE, TGAT]
   seeds_temporal: [0]
-  methods_temporal: [HashBlocklist, OpcodeKNN, XGBoost, GraphSAGE, TGAT, DelegNet]
+  methods_temporal: [HashBlocklist, OpcodeKNN, XGBoost, GraphSAGE, TGAT]
   seeds_family: [0]
-  methods_family: [HashBlocklist, OpcodeKNN, XGBoost, TGAT, DelegNet]
+  methods_family: [HashBlocklist, OpcodeKNN, XGBoost, TGAT]
   seeds_crosschain: [0]
-  methods_crosschain: [HashBlocklist, OpcodeKNN, XGBoost, TGAT, DelegNet]
+  methods_crosschain: [HashBlocklist, OpcodeKNN, XGBoost, TGAT]
   mutation_strengths: [0, 0.5, 1, 2, 4]
 
 tuning:                          # equal budget per method, validation families only
-  methods: [TGAT, GraphSAGE, XGBoost]      # DelegNet's graph expert reuses TGAT's tuned configuration
+  methods: [TGAT, GraphSAGE, XGBoost]      # OpcodeKNN and the blocklists have no hyperparameters
   trials: 6
   epoch_samples: 3000
   epochs: 15
 
-model:
+model:                       # graph baselines (TGAT, GraphSAGE)
   dim: 128
   heads: 4
   layers: 2
   dropout: 0.1
-  code_len: 512
-  code_dim: 128              # pre-trained code encoder width (fixed; `dim` is tuned)
-  code_layers: 2
-  prototypes_per_class: 10
   lr: 0.001
   weight_decay: 0.0001
   epochs: 25                 # cap only; early stopping on validation loss decides
   patience: 3
   batch_size: 64
   epoch_samples: 6000         # contract-balanced draws per epoch
-  lambda_cluster: 0.05
-  lambda_sep: 0.01
-  lambda_div: 0.01
-  pretrain_epochs: 30
   device: cpu            # Apple-GPU (mps) training hangs under the macOS GPU watchdog; cuda also works

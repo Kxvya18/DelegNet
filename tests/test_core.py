@@ -59,15 +59,23 @@ def test_canonicalization_undoes_mutation(chain):
     assert np.mean(sim) > 0.95 and np.mean(same_idioms) > 0.9
 
 
-def test_prototype_gradients_finite_at_zero_distance():
-    """The clustering loss pulls embeddings onto prototypes; gradients must stay finite there."""
-    from delegnet.patterns.prototypes import PrototypeLayer
-    layer = PrototypeLayer(8, per_class=2)
-    z = layer.protos.detach()[:3].clone().requires_grad_(True)   # exactly on three prototypes
-    logit, _, d2 = layer(z)
-    cl, sep, div = layer.losses(d2, torch.tensor([0.0, 0.0, 1.0]))
-    (logit.sum() + cl + sep + div).backward()
-    assert torch.isfinite(z.grad).all() and torch.isfinite(layer.protos.grad).all()
+def test_opcode_knn_scores_by_nearest_pattern():
+    """DelegNet's pattern memory (OpcodeKNN): 0.5 + (best scam similarity - best benign similarity) / 2."""
+    from delegnet.baselines import OpcodeKNN
+
+    class Bank:
+        code = {1: np.arange(1, 11), 2: np.arange(20, 30), 3: np.r_[np.arange(1, 8), 40, 41, 42]}
+
+        def get(self, chain, node):
+            return self.code[node], None
+
+    def sample(node, y=0.0):
+        return dict(chain="c", nodes=np.array([0, 0, node]), centres=np.array([0, 1, 2]), y=y)
+
+    bank = Bank()
+    m = OpcodeKNN().fit([sample(1, 1.0), sample(2, 0.0)], [], bank)
+    p = m.predict([sample(1), sample(2), sample(3)], bank)
+    assert p[0] == 1.0 and p[1] == 0.0 and 0.5 < p[2] < 1.0
 
 
 def test_segment_softmax():

@@ -4,7 +4,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import matplotlib
-import numpy as np
 import pandas as pd
 
 matplotlib.use("Agg")
@@ -75,7 +74,7 @@ def make_report(cfg):
         if auc_cols:
             fig, ax = plt.subplots(figsize=(5, 3.4))
             for method, grp in e.groupby("method"):
-                if method in ("DelegNet", "XGBoost", "TGAT", "StaticGAT", "OpcodeKNN"):
+                if method in ("OpcodeKNN", "XGBoost", "TGAT", "GraphSAGE"):
                     xs = [int(c[6:-1]) for c in auc_cols]
                     ax.errorbar(xs, grp[auc_cols].mean(), yerr=grp[auc_cols].std(), marker="o", capsize=2, label=method)
             ax.set_xscale("symlog", linthresh=10)
@@ -98,7 +97,7 @@ def make_report(cfg):
         fig.tight_layout()
         fig.savefig(rep / "fig_robustness_code.pdf")
 
-    for name in ("evasion_suite", "presignature", "open_set", "campaign_attribution", "early_warning"):
+    for name in ("evasion_suite", "presignature", "early_warning"):
         f = root / f"{name}.csv"
         if f.exists():
             d = pd.read_csv(f)

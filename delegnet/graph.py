@@ -285,7 +285,6 @@ def build_chain(cfg: dict, chain: str):
     lab = lab.sort_values("event").drop_duplicates(["authority", "delegate"], keep="first")
     lab["contract_node"] = g.dst[lab.event.values]
     lab["family"] = code_families(g, lab.contract_node.values)
-    lab["campaign"] = campaigns(g, lab)
     with open(root / "graph.pkl", "wb") as f:
         pickle.dump(g, f, protocol=pickle.HIGHEST_PROTOCOL)
     lab.to_parquet(root / "targets.parquet", index=False)
@@ -302,7 +301,7 @@ def load_graph(cfg: dict, chain: str) -> tuple[TemporalGraph, pd.DataFrame]:
 
 def code_families(g: TemporalGraph, contract_nodes: np.ndarray, threshold: float = 0.8) -> np.ndarray:
     """Group contracts whose canonical opcode 4-gram sets overlap (Jaccard >= threshold).
-    These families drive the family-disjoint split and the open-set experiments."""
+    These families drive the zero-day (leave-family-out) and family-disjoint splits."""
     uniq = np.unique(contract_nodes)
     grams = {}
     for n in uniq:
@@ -332,34 +331,6 @@ def code_families(g: TemporalGraph, contract_nodes: np.ndarray, threshold: float
                 parent[find(b)] = find(a)
     fam = {n: find(n) for n in uniq}
     return np.array([fam[n] for n in contract_nodes])
-
-
-def campaigns(g: TemporalGraph, lab: pd.DataFrame) -> np.ndarray:
-    """Connected components over shared sponsor / shared drain sink / shared contract among
-    malicious delegations. Used only to score campaign attribution, never as a feature."""
-    o = g.outcomes
-    parent = {}
-
-    def find(x):
-        parent.setdefault(x, x)
-        while parent[x] != x:
-            parent[x] = parent[parent[x]]
-            x = parent[x]
-        return x
-
-    def union(a, b):
-        parent[find(a)] = find(b)
-
-    for r in lab[lab.label == 1].itertuples():
-        me = ("d", r.auth_id)
-        union(me, ("c", r.contract_node))
-        if g.sender[r.event] != g.src[r.event]:
-            union(me, ("s", g.sender[r.event]))
-        sink = o.first_sink[r.auth_id]
-        if sink >= 0:
-            union(me, ("k", sink))
-    return np.array([hash(find(("d", r.auth_id))) % (2 ** 31) if r.label == 1 else -1
-                     for r in lab.itertuples()])
 
 
 __all__ = ["TemporalGraph", "build_graph", "build_chain", "load_graph", "MOTIF_NAMES", "motif_vector",

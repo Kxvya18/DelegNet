@@ -1,6 +1,7 @@
 """Paper figures (monochrome, IEEE column width) and CSV tables from the experiment outputs.
 
-  python results/make_figures.py      # writes results/figures/*.pdf|png and results/tables/*.csv
+  source .env.local; PYTHONPATH=. .venv/bin/python results/make_figures.py
+      # writes results/figures/*.pdf|png and results/tables/*.csv
 """
 import glob
 import os
@@ -12,7 +13,8 @@ import pandas as pd
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
-from matplotlib.ticker import LogLocator, NullFormatter  # noqa: E402
+
+from results.paper_names import name, paper_only as _paper_only  # noqa: E402
 
 RUNS = Path("runs")
 DATA = Path(os.environ.get("DELEGNET_DATA_ROOT", "data/full")) / "ethereum"
@@ -21,9 +23,6 @@ FIG, TAB = Path("results/figures"), Path("results/tables")
 FIG.mkdir(parents=True, exist_ok=True)
 TAB.mkdir(parents=True, exist_ok=True)
 
-# paper names: DelegNet = canonical code-pattern recognition core; DelegNet-H = graph+code hybrid
-NAMES = {"OpcodeKNN": "DelegNet", "DelegNet": "DelegNet-H", "OpcodeKNN-raw": "Fuzzy hash",
-         "HashBlocklist": "Blocklist", "XGBoost": "XGBoost", "GraphSAGE": "GraphSAGE", "TGAT": "TGAT"}
 ORDER = ["DelegNet", "TGAT", "GraphSAGE", "XGBoost", "Fuzzy hash", "Blocklist"]
 STYLE = {  # monochrome: grey level, hatch, marker, line style
     "DelegNet":   ("0.00", "",     "o", "-"),
@@ -45,16 +44,6 @@ plt.rcParams.update({
     "savefig.bbox": "tight", "savefig.dpi": 300, "hatch.linewidth": 0.5,
 })
 COL, DCOL = 3.5, 7.16   # IEEE single / double column width (in)
-
-
-def name(m):
-    base = m.replace(" (ensemble)", "")
-    return NAMES.get(base, base) + (" (ens.)" if "(ensemble)" in m else "")
-
-
-def _paper_only(df):
-    """The paper reports DelegNet and the baselines; the exploratory hybrid is not part of it."""
-    return df[~df.model.str.startswith("DelegNet-H")]
 
 
 def save(fig, stem):
