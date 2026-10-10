@@ -1,7 +1,7 @@
 """Bytecode pattern recognition.
 
 `canonicalize` undoes the cheap obfuscations attackers use when they copy-paste a
-sweeper (junk pushes, equivalent opcodes, padded trailers), so that the encoder and
+sweeper (junk pushes, equivalent opcodes, padded trailers), so that the pattern memory and
 the idiom detectors see the same thing for every variant of a family.
 `idioms` turns the canonical form into interpretable indicators.
 """

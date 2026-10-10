@@ -12,7 +12,6 @@ contracts (benign rows are untouched) and evaluated identically for every model:
 """
 from __future__ import annotations
 
-import numpy as np
 
 from .graph import AUTH, NODE_FEATS, SPONSOR
 from .patterns.motifs import MOTIF_NAMES

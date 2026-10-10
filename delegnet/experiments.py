@@ -1,10 +1,11 @@
 """Evaluation protocols and analyses for the paper.
 
 Protocols
+  zeroday     leave-family-out cross-validation: every test contract belongs to a code family
+              never seen in training (the paper's headline setting)
   temporal    train on the earliest 60% of delegations, validate on the next 20%, test on
-              the last 20% (the deployment setting; no future information in training)
-  family      whole code families held out from training (unseen attack/wallet families);
-              also provides the in-distribution test for the open-set experiment
+              the last 20% (no future information in training)
+  family      whole code families held out from training (unseen attack/wallet families)
   crosschain  train on the source chain, test zero-shot and k-shot on other chains
 
 Thresholds are always chosen on validation data, never on test.
@@ -19,21 +20,18 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
-from sklearn.cluster import AgglomerativeClustering
-from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score, roc_auc_score
+from sklearn.metrics import roc_auc_score
 
 from .baselines import BASELINES
-from .evaluate import (best_f1_threshold, early_warning, explain_edges, fidelity, metrics, paired_bootstrap,
-                       relation_importance, threshold_at_fpr)
+from .evaluate import best_f1_threshold, early_warning, metrics, paired_bootstrap, threshold_at_fpr
 from .graph import load_graph
 from .evasion import ATTACKS, apply_attack
-from .model import VARIANTS
 from .train import CodeBank, build_samples, predict, train_model
 
 log = logging.getLogger("exp")
 
-MAIN = ["HashBlocklist", "OpcodeKNN-raw", "OpcodeKNN", "XGBoost", "GraphSAGE", "StaticGAT", "TGAT", "DelegNet"]
-ABLATIONS = ["DelegNet-cleanGate", "DelegNet-noGate", "DelegNet-graphOnly", "DelegNet-codeOnly"]
+# OpcodeKNN is the paper's DelegNet (canonical code-pattern recognition); the rest are baselines
+MAIN = ["HashBlocklist", "OpcodeKNN-raw", "OpcodeKNN", "XGBoost", "GraphSAGE", "TGAT"]
 
 
 def _labelled(tg):
@@ -166,19 +164,7 @@ def run_zeroday(cfg, k=None, tag="zeroday"):
 
 
 def _fit_predict(cfg, method, train, val, tests: dict, bank, seed, out_dir):
-    from .stacking import STACKED, fit_stacked
     from .tuning import tuned
-    if method in STACKED:
-        gcfg, _ = tuned(cfg, "TGAT")   # the graph expert uses TGAT's own tuned configuration
-        m, cal = fit_stacked(cfg, method, train, val, bank, seed,
-                             lambda tr, va: train_model(gcfg, "TGAT", tr, va, bank, seed))
-        preds = {k: m.predict_full(v, bank) for k, v in tests.items()}
-        v0 = [s for s in val if s["delta"] == 0] or val
-        pv, yv = m.predict(v0, bank), np.array([s["y"] for s in v0])
-        (out_dir / "models").mkdir(exist_ok=True, parents=True)
-        pickle.dump(m, open(out_dir / "models" / f"{method}_s{seed}.pkl", "wb"))
-        return preds, dict(tau_f1=best_f1_threshold(yv, pv),
-                           tau_fpr=threshold_at_fpr(yv, pv, cfg["experiment"]["target_fpr"]))
     cfg, xgb_params = tuned(cfg, method)
     if method in BASELINES:
         m = BASELINES[method](seed, xgb_params) if method == "XGBoost" else BASELINES[method]()
@@ -201,11 +187,6 @@ def _fit_predict(cfg, method, train, val, tests: dict, bank, seed, out_dir):
 def _frame(samples, pred, method, seed, split):
     df = pd.DataFrame(dict(auth_id=[s["auth_id"] for s in samples], delta=[s["delta"] for s in samples],
                            cutoff=[s["cutoff"] for s in samples], y=[s["y"] for s in samples], p=pred["p"]))
-    if "d2" in pred:
-        df["novelty"] = pred["d2"].min(1)
-    for k in ("gate", "graph_p", "code_p"):
-        if k in pred:
-            df[k] = pred[k]
     df["method"], df["seed"], df["split"] = method, seed, split
     return df
 
@@ -220,8 +201,7 @@ def run_protocol(cfg, protocol: str, methods=None):
     out_dir.mkdir(parents=True, exist_ok=True)
     g, tg = load_graph(cfg, src)
     graphs = {src: g}
-    methods = methods or ex.get(f"methods_{protocol}") or ex.get("methods") or \
-        (MAIN + ABLATIONS if protocol == "temporal" else MAIN)
+    methods = methods or ex.get(f"methods_{protocol}") or ex.get("methods") or MAIN
     ex = {**ex, "seeds": ex.get(f"seeds_{protocol}", ex["seeds"])}
     rows, frames = [], []
 
@@ -268,7 +248,7 @@ def run_protocol(cfg, protocol: str, methods=None):
             rows += new_rows
             log.info("%s seed %d: %s", method, seed, {r["split"]: round(r.get("auprc", np.nan), 4)
                                                      for r in rows[-len(tests):]})
-            if protocol == "crosschain" and method in ("DelegNet", "XGBoost"):
+            if protocol == "crosschain" and method == "XGBoost":
                 rows += _few_shot(cfg, method, train, val, test_sets, tests, bank, seed, out_dir, frames)
 
         pd.DataFrame(rows).to_csv(out_dir / "metrics.csv", index=False)
@@ -280,7 +260,6 @@ def run_protocol(cfg, protocol: str, methods=None):
 def _few_shot(cfg, method, train, val, test_sets, tests, bank, seed, out_dir, frames):
     """k labelled examples per class from the *earliest* target delegations; test on the rest."""
     rows = []
-    base = torch.load(out_dir / "models" / f"{method}_s{seed}.pt", weights_only=False) if method != "XGBoost" else None
     for ch in cfg["experiment"]["target_chains"]:
         samples = tests[ch]
         order = np.argsort([s["cutoff"] for s in samples])
@@ -292,14 +271,9 @@ def _few_shot(cfg, method, train, val, test_sets, tests, bank, seed, out_dir, fr
                 continue
             ft = [samples[i] for i in shot]
             rest = [s for i, s in enumerate(samples) if i not in shot]
-            if method == "XGBoost":
-                m = BASELINES["XGBoost"](seed).fit(train + ft * 10, val, bank)
-                p = m.predict(rest, bank)
-                pv = m.predict([s for s in val if s["delta"] == 0], bank)
-            else:
-                m = train_model(cfg, method, ft, ft, bank, seed, init=base, epochs=15, lr=cfg["model"]["lr"] / 10)
-                p = predict(m, rest, bank)["p"]
-                pv = predict(m, [s for s in val if s["delta"] == 0], bank)["p"]
+            m = BASELINES[method](seed).fit(train + ft * 10, val, bank)
+            p = m.predict(rest, bank)
+            pv = m.predict([s for s in val if s["delta"] == 0], bank)
             yv = np.array([s["y"] for s in val if s["delta"] == 0])
             taus = dict(tau_f1=best_f1_threshold(yv, pv), tau_fpr=threshold_at_fpr(yv, pv, cfg["experiment"]["target_fpr"]))
             y = np.array([s["y"] for s in rest])
@@ -307,25 +281,26 @@ def _few_shot(cfg, method, train, val, test_sets, tests, bank, seed, out_dir, fr
     return rows
 
 
-def _significance(out_dir: Path, seeds):
-    """Paired bootstrap of DelegNet vs every other method on identical test sets, per seed."""
+def _significance(out_dir: Path, seeds, ours="OpcodeKNN"):
+    """Paired bootstrap of OpcodeKNN (the paper's DelegNet) vs every other method on identical test
+    sets, per seed."""
     pr = pd.read_parquet(out_dir / "predictions.parquet")
     pr = pr[pr.delta == 0]
     res = []
     for (seed, split), grp in pr.groupby(["seed", "split"]):
         piv = grp.pivot_table(index="auth_id", columns="method", values="p")
         y = grp.groupby("auth_id").y.first().loc[piv.index].values
-        if "DelegNet" not in piv or not 0 < y.sum() < len(y):
+        if ours not in piv or not 0 < y.sum() < len(y):
             continue
-        for other in piv.columns.drop("DelegNet"):
+        for other in piv.columns.drop(ours):
             res.append(dict(seed=seed, split=split, vs=other,
-                            **paired_bootstrap(y, piv["DelegNet"].values, piv[other].values, seed=int(seed))))
+                            **paired_bootstrap(y, piv[ours].values, piv[other].values, seed=int(seed))))
     pd.DataFrame(res).to_csv(out_dir / "significance.csv", index=False)
 
 
 # ======================================================================= analyses
 
-ANALYSIS_METHODS = ["HashBlocklist", "OpcodeKNN-raw", "OpcodeKNN", "XGBoost", "GraphSAGE", "TGAT", "DelegNet"]
+ANALYSIS_METHODS = ["HashBlocklist", "OpcodeKNN-raw", "OpcodeKNN", "XGBoost", "GraphSAGE", "TGAT"]
 
 
 def run_analyses(cfg):
@@ -341,7 +316,7 @@ def run_analyses(cfg):
     bank = CodeBank({src: g})
     k = ex.get("zeroday_folds", 3)
     zpr = pd.read_parquet(zd / "predictions.parquet")
-    ew, rob, ev, camp, protos, pre = [], [], [], [], [], []
+    ew, rob, ev, pre = [], [], [], []
 
     def load(method, seed):
         f = zd / "models" / f"{method}_s{seed}"
@@ -352,33 +327,9 @@ def run_analyses(cfg):
         return None
 
     def full(m, S):
-        if hasattr(m, "predict_full"):
-            return m.predict_full(S, bank)
         if hasattr(m, "fit"):
             return dict(p=m.predict(S, bank))
         return predict(m, S, bank, device=cfg["model"]["device"])
-
-    def embeds(method, m, S):
-        """Candidate embeddings for attribution; when a model offers several, the caller picks one
-        by validation ARI (never test)."""
-        if method == "XGBoost":
-            return {"leaves": m.leaves(S, bank).astype(float)}
-        if hasattr(m, "graph"):            # DelegNet: graph expert + its pattern evidence
-            o = m.predict_full(S, bank)
-            z = predict(m.graph, S, bank, device=cfg["model"]["device"])["z"]
-            idi = np.stack([(bank.get(s["chain"], int(s["nodes"][s["centres"][2]])) or (None, np.zeros(21)))[1]
-                            for s in S])
-            mot = np.stack([s["motifs"] for s in S])
-            zs = lambda a: (a - a.mean(0)) / (a.std(0) + 1e-6)  # noqa: E731
-            scores = np.stack([o.get("graph_p", o["p"]), o.get("code_p", o["p"]), o.get("gate", o["p"])], 1)
-            return {"graph": z, "graph+scores": np.hstack([zs(z), zs(scores)]),
-                    "graph+patterns": np.hstack([zs(z), zs(idi), zs(mot)])}
-        if not hasattr(m, "fit"):
-            return {"graph": predict(m, S, bank, device=cfg["model"]["device"])["z"]}
-        return None
-
-    def cluster(z, th, scale):
-        return AgglomerativeClustering(None, distance_threshold=th * scale, linkage="average").fit_predict(z)
 
     for seed in ex["seeds"]:
         fold, tr, va, te = list(zeroday_folds(tg, k, seed))[-1]
@@ -386,7 +337,6 @@ def run_analyses(cfg):
         testcp = build_samples(cfg, src, te, ex["checkpoints_s"])
         masked = build_samples(cfg, src, te, [0], mask_sponsor=True)
         presig = build_samples(cfg, src, te, [-1])
-        val0 = build_samples(cfg, src, va, [0])
         y0 = np.array([s["y"] for s in test0])
         mal_nodes = {int(s["nodes"][s["centres"][2]]) for s in test0 if s["y"] == 1}
         for method in ANALYSIS_METHODS:
@@ -425,88 +375,16 @@ def run_analyses(cfg):
             ev.append(dict(method=method, seed=seed, setting="original", auroc=roc_auc_score(y0, full(m, test0)["p"]),
                            recall_at_fpr=float((full(m, test0)["p"][y0 == 1] >= tau).mean())))
 
-            # 3b. pre-signature screening: score before the authorization lands, submitter unknown
+            # 4. pre-signature screening: score before the authorization lands, submitter unknown
             pp = full(m, presig)["p"]
             yp = np.array([s["y"] for s in presig])
             pre.append(dict(method=method, seed=seed, auroc=roc_auc_score(yp, pp),
                             recall_at_fpr=float((pp[yp == 1] >= tau).mean()),
                             false_alarm=float((pp[yp == 0] >= tau).mean())))
-
-            # 4. campaign attribution: cluster malicious delegations by attacker operation
-            vS, tS = [s for s in val0 if s["y"] == 1], [s for s in test0 if s["y"] == 1]
-            ev_v = embeds(method, m, vS) if len(vS) > 2 and len(tS) > 2 else None
-            if ev_v is not None:
-                ev_t = embeds(method, m, tS)
-                cmap = tg.set_index("auth_id").campaign
-                yv, yt = cmap.loc[[s["auth_id"] for s in vS]].values, cmap.loc[[s["auth_id"] for s in tS]].values
-                best = None
-                for name, zv in ev_v.items():     # embedding and threshold both chosen on validation
-                    scale = np.median(np.linalg.norm(zv - zv.mean(0), axis=1)) + 1e-9
-                    for th in np.linspace(0.05, 3, 40):
-                        a = adjusted_rand_score(yv, cluster(zv, th, scale))
-                        if best is None or a > best[0]:
-                            best = (a, name, th)
-                _, name, th = best
-                zt = ev_t[name]
-                pt = cluster(zt, th, np.median(np.linalg.norm(zt - zt.mean(0), axis=1)) + 1e-9)
-                camp.append(dict(method=method, seed=seed, embedding=name, ari=adjusted_rand_score(yt, pt),
-                                 nmi=normalized_mutual_info_score(yt, pt)))
-
-            # 5. prototypes (DelegNet's graph expert): are they pure, real-pattern explanations?
-            if method == "DelegNet" and hasattr(m.graph, "post_protos"):
-                d2 = full(m, test0)["d2"]
-                near = d2.argmin(1)
-                fams = tg.set_index("auth_id").loc[[s["auth_id"] for s in test0], "family"].values
-                for pi in range(len(m.graph.post_proto_class)):
-                    sel_p = near == pi
-                    c = int(m.graph.post_proto_class[pi])
-                    src_aid = int(m.graph.post_proto_source[pi])
-                    srow = tg[tg.auth_id == src_aid]
-                    protos.append(dict(seed=seed, proto=pi, cls=c, n_test=int(sel_p.sum()),
-                                       label_purity=float((y0[sel_p] == c).mean()) if sel_p.any() else np.nan,
-                                       family_purity=float(pd.Series(fams[sel_p]).value_counts(normalize=True).iloc[0])
-                                       if sel_p.any() else np.nan, source_auth_id=src_aid,
-                                       source_tx=srow.tx_hash.iloc[0] if len(srow) else ""))
         log.info("analyses seed %d done", seed)
 
     pd.DataFrame(ew).to_csv(root / "early_warning.csv", index=False)
     pd.DataFrame(rob).to_csv(root / "robustness_code.csv", index=False)
     pd.DataFrame(ev).to_csv(root / "evasion_suite.csv", index=False)
     pd.DataFrame(pre).to_csv(root / "presignature.csv", index=False)
-    pd.DataFrame(camp).to_csv(root / "campaign_attribution.csv", index=False)
-    pd.DataFrame(protos).to_csv(root / "prototypes.csv", index=False)
-
-    # 6. open set (family protocol): do unseen families look novel? uncertainty for every method,
-    #    prototype distance where a model has prototypes
-    fam = pd.read_parquet(root / "family" / "predictions.parquet")
-    os_rows = []
-    for (method, seed), grp in fam.groupby(["method", "seed"]):
-        idm, ood = grp[grp.split == "test_id"], grp[grp.split == "test_ood"]
-        if not len(idm) or not len(ood):
-            continue
-        lab = np.r_[np.zeros(len(idm)), np.ones(len(ood))]
-        row = dict(method=method, seed=seed,
-                   auroc_uncertainty=roc_auc_score(lab, -np.abs(np.r_[idm.p, ood.p] - 0.5)))
-        if "novelty" in grp and grp.novelty.notna().all():
-            row["auroc_prototype_distance"] = roc_auc_score(lab, np.r_[idm.novelty, ood.novelty])
-        os_rows.append(row)
-    pd.DataFrame(os_rows).to_csv(root / "open_set.csv", index=False)
-
-    # 7. explanations of DelegNet's graph expert: which relations drive alerts, and are they faithful?
-    out = {}
-    m = load("DelegNet", ex["seeds"][0])
-    if m is not None:
-        fold, tr, va, te = list(zeroday_folds(tg, k, ex["seeds"][0]))[-1]
-        pos = [s for s in build_samples(cfg, src, te, [0]) if s["y"] == 1][:200]
-        mt, fid = [], []
-        for i, s in enumerate(pos):
-            mask, b = explain_edges(m.graph, s, bank)
-            if len(mask):
-                mt.append((mask, b["etype"].cpu().numpy()))
-                fid.append(fidelity(m.graph, s, bank, mask, seed=i))
-        out["relation_importance"] = relation_importance(mt)
-        f = np.array(fid)
-        out["fidelity_top10"] = float(f[:, 0].mean()) if len(f) else np.nan
-        out["fidelity_random10"] = float(f[:, 1].mean()) if len(f) else np.nan
-    (root / "explanations.json").write_text(json.dumps(out, indent=2))
-    log.info("analyses done: %s", out)
+    log.info("analyses done")

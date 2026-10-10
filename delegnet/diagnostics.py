@@ -4,7 +4,7 @@
                        (1st victim, 2-10, 11-100, >100). On the 1st victim no sibling evidence exists.
   contract_level.csv   one score per contract (mean over its first 10 delegations), AUROC with a
                        bootstrap 95% CI, so giant campaigns cannot dominate.
-  significance.csv     paired bootstrap of DelegNet vs every baseline per seed and slice.
+  significance.csv     paired bootstrap of OpcodeKNN (the paper's DelegNet) vs every baseline per seed and slice.
   gaps.csv             AUROC on train / validation / test families for the last fold's saved models:
                        a large train-test gap is overfitting.
   label_shuffle.csv    models retrained on permuted training labels; test AUROC must collapse to ~0.5,
@@ -62,9 +62,11 @@ def contract_level(pr: pd.DataFrame, n_boot=2000) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def significance(pr: pd.DataFrame, ours="DelegNet") -> pd.DataFrame:
+def significance(pr: pd.DataFrame, ours="OpcodeKNN", metrics=("auroc", "auprc"), n_boot=2000) -> pd.DataFrame:
     rows = []
-    slices = {"all": lambda g: g, "first10": lambda g: g[g.rank_in_contract <= 10]}
+    fns = {"auroc": roc_auc_score, "auprc": average_precision_score}
+    slices = {"all": lambda g: g, "first10": lambda g: g[g.rank_in_contract <= 10],
+              "first1": lambda g: g[g.rank_in_contract == 1]}
     for seed, g in pr[pr.seed >= 0].groupby("seed"):
         for sname, f in slices.items():
             piv = f(g).pivot_table(index="auth_id", columns="method", values="p")
@@ -73,14 +75,15 @@ def significance(pr: pd.DataFrame, ours="DelegNet") -> pd.DataFrame:
                 continue
             for other in piv.columns.drop(ours):
                 ok = piv[[ours, other]].notna().all(1).values
-                for metric, fn in (("auroc", roc_auc_score), ("auprc", average_precision_score)):
-                    r = paired_bootstrap(y[ok], piv[ours].values[ok], piv[other].values[ok], metric=fn, seed=int(seed))
+                for metric in metrics:
+                    r = paired_bootstrap(y[ok], piv[ours].values[ok], piv[other].values[ok], metric=fns[metric],
+                                         n=n_boot, seed=int(seed))
                     rows.append(dict(seed=seed, slice=sname, metric=metric, vs=other, **r))
     return pd.DataFrame(rows)
 
 
-def run_diagnostics(cfg: dict, shuffle_runs=(("XGBoost", 5), ("DelegNet", 3))):
-    from .experiments import _fit_predict, zeroday_folds
+def run_diagnostics(cfg: dict, shuffle_runs=(("XGBoost", 5),)):
+    from .experiments import ANALYSIS_METHODS, _fit_predict, zeroday_folds
     from .graph import load_graph
     from .train import CodeBank, build_samples, predict
 
@@ -109,6 +112,8 @@ def run_diagnostics(cfg: dict, shuffle_runs=(("XGBoost", 5), ("DelegNet", 3))):
     rows = []
     for f in sorted((root / "zeroday" / "models").glob("*_s0.*")):
         method = f.stem.rsplit("_s", 1)[0]
+        if method not in ANALYSIS_METHODS:   # models of methods no longer in the pipeline
+            continue
         m = pickle.load(open(f, "rb")) if f.suffix == ".pkl" else torch.load(f, weights_only=False)
         row = dict(method=method, fold=fold)
         for name, S in sets.items():

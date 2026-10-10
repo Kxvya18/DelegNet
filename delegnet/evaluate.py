@@ -2,13 +2,10 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-import torch
 from sklearn.metrics import (average_precision_score, f1_score, matthews_corrcoef, precision_score,
                              recall_score, roc_auc_score)
 
-from .graph import N_REL
 from .patterns.motifs import NONE, TRANSFER
-from .train import collate
 
 
 def threshold_at_fpr(y, p, fpr):
@@ -91,50 +88,3 @@ def early_warning(g, preds: pd.DataFrame, tau: float) -> dict:
         value_saved_ratio=float(saved / total) if total else np.nan,
         benign_false_alarm=float(r[r.y == 0].alerted.astype(float).mean()) if (r.y == 0).any() else np.nan,
     )
-
-
-# ------------------------------------------------------------------ explanations
-
-def explain_edges(model, sample, bank, steps=150, lr=0.05, size_coef=0.005, ent_coef=0.1, device="cpu"):
-    """GNNExplainer-style soft edge mask for one delegation."""
-    model.eval()
-    b = collate([sample], bank, device)
-    E = b["esrc"].shape[0]
-    if E == 0:
-        return np.zeros(0), b
-    with torch.no_grad():
-        target = (torch.sigmoid(model(b)["logit"]) >= 0.5).float()
-    mask = torch.nn.Parameter(torch.full((E,), 2.0, device=device))
-    opt = torch.optim.Adam([mask], lr=lr)
-    for _ in range(steps):
-        w = torch.sigmoid(mask)
-        logit = model(b, edge_weight=w)["logit"]
-        ent = -(w * torch.log(w + 1e-8) + (1 - w) * torch.log(1 - w + 1e-8)).mean()
-        loss = torch.nn.functional.binary_cross_entropy_with_logits(logit, target) + size_coef * w.sum() + ent_coef * ent
-        opt.zero_grad(); loss.backward(); opt.step()
-    return torch.sigmoid(mask).detach().cpu().numpy(), b
-
-
-def relation_importance(masks_and_types) -> dict:
-    rows = [(t, m) for mask, types in masks_and_types for t, m in zip(types, mask)]
-    df = pd.DataFrame(rows, columns=["etype", "w"])
-    names = {0: "AUTH", 1: "SPONSOR", 2: "REVOKE", 3: "TRANSFER"}
-    return {names[k % N_REL]: float(v) for k, v in df.groupby("etype").w.mean().items()}
-
-
-@torch.no_grad()
-def fidelity(model, sample, bank, mask, frac=0.1, seed=0, device="cpu") -> tuple[float, float]:
-    """Probability drop when removing the top-`frac` explained edges vs random edges."""
-    b = collate([sample], bank, device)
-    E = len(mask)
-    if E == 0:
-        return 0.0, 0.0
-    k = max(1, int(frac * E))
-    p0 = torch.sigmoid(model(b)["logit"]).item()
-    w = torch.ones(E, device=device)
-    w[torch.as_tensor(np.argsort(-mask)[:k])] = 1e-6
-    p_top = torch.sigmoid(model(b, edge_weight=w)["logit"]).item()
-    w = torch.ones(E, device=device)
-    w[torch.as_tensor(np.random.default_rng(seed).choice(E, k, replace=False))] = 1e-6
-    p_rand = torch.sigmoid(model(b, edge_weight=w)["logit"]).item()
-    return p0 - p_top, p0 - p_rand

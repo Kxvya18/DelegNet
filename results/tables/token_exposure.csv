@@ -1,0 +1,4 @@
+label,contracts,token_interface,drainer_profile,drainer_profile_no_ether_drain,delegations,drainer_profile_delegations
+unlabelled,594,212,8,4,21952,49
+benign,11,1,0,0,3201,0
+malicious,49,20,3,0,11320,230

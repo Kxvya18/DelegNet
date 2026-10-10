@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Paper experiments, most decisive first. Needs built graphs (scripts/run_pipeline.sh <chain>).
-#   scripts/run_experiments.sh                     # pretrain + all protocols + analyses + report
+#   scripts/run_experiments.sh                     # tune + all protocols + analyses + report
 #   scripts/run_experiments.sh temporal family     # resume: only these protocols, then analyses + report
 # Each stage runs under a watchdog: if its log is silent for STALL_MIN minutes (e.g. a hung GPU
 # command buffer on macOS) the stage is killed and restarted; finished folds/methods are checkpointed.
@@ -35,13 +35,10 @@ watched() {   # watched <logfile> <run.py args...>
 }
 
 if [ $# -eq 0 ]; then
-  # full run: results are regenerated from scratch; the code encoder and tuning are reused if present
-  set -- zeroday zeroday_ablation temporal family crosschain
+  # full run: results are regenerated from scratch; tuning is reused if present
+  set -- zeroday temporal family crosschain
   RUNS=$(.venv/bin/python -c "from delegnet.config import load_config; print(load_config('$CFG')['run_root'])")
-  rm -rf "$RUNS"/{zeroday,zeroday_ablation,temporal,family,crosschain,diagnostics,report}
-  if [ ! -f "$RUNS/code_encoder.pt" ]; then
-    mark "pretrain"; watched logs/pretrain.log pretrain || { mark "FAILED pretrain"; exit 1; }
-  fi
+  rm -rf "$RUNS"/{zeroday,temporal,family,crosschain,diagnostics,report}
   if [ ! -f "$RUNS/tuning/best.json" ]; then
     mark "tune"; watched logs/tune.log tune || { mark "FAILED tune"; exit 1; }
   fi

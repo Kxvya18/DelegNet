@@ -2,10 +2,11 @@
 
   HashBlocklist  what wallets and explorers do today: exact bytecode match against
                  contracts already known to be malicious at training time
-  OpcodeKNN      fuzzy-hash analogue: Jaccard similarity of canonical opcode 4-grams to
-                 the nearest known malicious vs benign contract
-  XGBoost        strong tabular model over the same centre-node, motif, auth and idiom
-                 features DelegNet sees (everything except message passing)
+  OpcodeKNN      the paper's DelegNet (Pattern Recognition Module): Jaccard similarity of
+                 canonical opcode 4-grams to the nearest known malicious vs benign contract
+  OpcodeKNN-raw  prior-art fuzzy hashing: the same similarity on raw, uncanonicalised opcodes
+  XGBoost        strong tabular model over the centre-node, motif, auth and idiom features the
+                 graph models see (everything except message passing)
 """
 from __future__ import annotations
 
@@ -80,7 +81,7 @@ class OpcodeKNN:
 
 class OpcodeKNNRaw(OpcodeKNN):
     """Prior-art fuzzy hashing: opcode 4-gram similarity on the *raw* deployed bytecode, without
-    DelegNet's canonicalisation (so junk instructions and equivalent-opcode swaps count)."""
+    the canonicalisation (so junk instructions and equivalent-opcode swaps count)."""
     name = "OpcodeKNN-raw"
 
     @staticmethod

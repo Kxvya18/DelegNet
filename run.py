@@ -3,11 +3,10 @@
   python run.py collect  --chain ethereum          # scan -> code -> activity -> senders -> hop2
   python run.py label    --chain ethereum
   python run.py build    --chain ethereum          # temporal graph, motifs, code features
-  python run.py pretrain                           # contrastive code encoder
   python run.py tune                               # equal-budget search on validation families
-  python run.py experiment --protocol temporal     # temporal | family | crosschain
+  python run.py experiment --protocol zeroday      # zeroday | temporal | family | crosschain
   python run.py diagnose                           # overfitting / leakage checks for zero-day
-  python run.py analyse                            # early warning, robustness, open-set, explanations
+  python run.py analyse                            # monitoring, code disguise, evasion suite, pre-signature
   python run.py report
 """
 import argparse
@@ -122,9 +121,6 @@ def main():
         from delegnet.graph import build_chain
         for ch in chains:
             build_chain(cfg, ch)
-    elif args.stage == "pretrain":
-        from delegnet.train import pretrain_code_encoder
-        pretrain_code_encoder(cfg)
     elif args.stage == "experiment":
         from delegnet.experiments import run_protocol, run_zeroday
         if args.protocol.startswith("zeroday"):
